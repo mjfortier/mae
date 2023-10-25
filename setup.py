@@ -5,9 +5,9 @@ import setuptools
 from setuptools import setup
 
 setup(
-    name="mae_factory",
+    name="vit_foundry",
     version="0.0.1",
-    description="Modular vision transformer lbirary for rapid model prototyping",
+    description="Modular vision transformer library for rapid model prototyping",
     author="Matthew Fortier",
     author_email="fortier.matt@gmail.com",
     packages=setuptools.find_packages(),
