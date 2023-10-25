@@ -1,2 +1,2 @@
-# MAE
-Heavily refactored huggingface ViTMAE
+# ViT Foundry
+This package contains tools for rapid prototyping of vision transformer (ViT) models. It was created due to the inherent difficulty of modifying vision transformer libraries such as HuggingFace's or MetaAI's. The idea is to create the building blocks of transformers to favour [composition over inheritance](https://en.wikipedia.org/wiki/Composition_over_inheritance). This modular approach allows you to setup and tear down exotic architectures more easily.
