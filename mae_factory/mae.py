@@ -1,7 +1,7 @@
 import os
 import torch
 from torch import nn
-import mae_components as mc
+import mae_factory.mae_components as mc
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
