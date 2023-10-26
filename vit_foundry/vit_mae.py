@@ -1,10 +1,41 @@
 import os
 import torch
 from torch import nn
-import vit_foundry.vit_components as mc
+import vit_foundry.vit_components as vc
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
+
+
+def vit_mae_base_config():
+    return vc.ViTMAEConfig(
+        hidden_size = 768,
+        num_hidden_layers = 12,
+        num_attention_heads = 12,
+        decoder_hidden_size = 512,
+        decoder_num_hidden_layers = 8,
+        decoder_num_attention_heads = 16
+    )
+
+def vit_mae_large_config():
+    return vc.ViTMAEConfig(
+        hidden_size = 1024,
+        num_hidden_layers = 24,
+        num_attention_heads = 16,
+        decoder_hidden_size = 512,
+        decoder_num_hidden_layers = 8,
+        decoder_num_attention_heads = 16
+    )
+
+def vit_mae_huge_config():
+    return vc.ViTMAEConfig(
+        hidden_size = 1280,
+        num_hidden_layers = 32,
+        num_attention_heads = 16,
+        decoder_hidden_size = 512,
+        decoder_num_hidden_layers = 8,
+        decoder_num_attention_heads = 16
+    )
 
 
 class MultiImageDataset(Dataset):
@@ -42,14 +73,14 @@ class ViTMAE(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.patch_embedding = mc.ViTMAEPatchEmbeddings(config)
-        self.enc_positional_embedding = mc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
-        self.random_masking = mc.ViTMAERandomMasking(config)
+        self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
+        self.enc_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.random_masking = vc.ViTMAERandomMasking(config)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
-        self.encoder = mc.ViTMAEEncoder(config)
+        self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
-        self.dec_positional_embedding = mc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
-        self.decoder = mc.ViTMAEDecoder(config)
+        self.dec_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
+        self.decoder = vc.ViTMAEDecoder(config)
         self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
         self.decoder_pred = nn.Linear(
             config.decoder_hidden_size, config.patch_size * config.patch_size * config.num_channels, bias=True

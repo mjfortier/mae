@@ -51,7 +51,8 @@ class ViTMAEConfig():
     hidden_size: int = 768
     num_hidden_layers: int = 12
     num_attention_heads: int = 12
-    intermediate_size: int = 3072
+    mlp_ratio: int = 4
+    z: int = 3072
     hidden_act: str = "gelu"
     hidden_dropout_prob: float = 0.0
     attention_probs_dropout_prob: float = 0.0
@@ -65,7 +66,7 @@ class ViTMAEConfig():
     decoder_hidden_size: int = 512
     decoder_num_hidden_layers: int = 8
     decoder_num_attention_heads: int = 16
-    decoder_intermediate_size: int = 2048
+    decoder_mlp_ratio: int = 4
     mask_ratio: float = 0.75
     norm_pix_loss: bool = False
 
@@ -297,12 +298,12 @@ class ViTMAELayer(nn.Module):
         self.attention = ViTMAEAttentionBlock(config)
         self.layernorm_2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.fc1 = nn.Linear(config.hidden_size, config.mlp_ratio * config.hidden_size)
         if isinstance(config.hidden_act, str):
             self.fc_act = ACT2FN[config.hidden_act]
         else:
             self.fc_act = config.hidden_act
-        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.fc2 = nn.Linear(config.mlp_ratio * config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
@@ -372,7 +373,7 @@ class ViTMAEDecoder(nn.Module):
         decoder_config.hidden_size = config.decoder_hidden_size
         decoder_config.num_hidden_layers = config.decoder_num_hidden_layers
         decoder_config.num_attention_heads = config.decoder_num_attention_heads
-        decoder_config.intermediate_size = config.decoder_intermediate_size
+        decoder_config.mlp_ratio = config.decoder_mlp_ratio
         self.decoder_layers = nn.ModuleList(
             [ViTMAELayer(decoder_config) for _ in range(config.decoder_num_hidden_layers)]
         )
