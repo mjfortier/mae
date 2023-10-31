@@ -190,7 +190,7 @@ class ViTMAERandomMasking(nn.Module):
         h = torch.cat([h[:, :1, :], h_], dim=1)  # append cls token
         return h
 
-    def forward(self, sequence, noise=None):
+    def forward(self, sequence, mask=None):
         """
         Perform per-sample random masking by per-sample shuffling. Per-sample shuffling is done by argsort random
         noise.
@@ -201,24 +201,33 @@ class ViTMAERandomMasking(nn.Module):
                 mainly used for testing purposes to control randomness and maintain the reproducibility
         """
         batch_size, seq_length, dim = sequence.shape
-        len_keep = int(seq_length * (1 - self.config.mask_ratio))
 
-        if noise is None:
+        if mask is None:
             noise = torch.rand(batch_size, seq_length, device=sequence.device)  # noise in [0, 1]
 
-        # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
+            len_keep = int(seq_length * (1 - self.config.mask_ratio))
+            # sort noise for each sample
+            ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+            ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep]
-        sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
+            # keep the first subset
+            ids_keep = ids_shuffle[:, :len_keep]
+            sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
 
-        # generate the binary mask: 0 is keep, 1 is remove
-        mask = torch.ones([batch_size, seq_length], device=sequence.device)
-        mask[:, :len_keep] = 0
-        # unshuffle to get the binary mask
-        mask = torch.gather(mask, dim=1, index=ids_restore)
+            # generate the binary mask: 0 is keep, 1 is remove
+            mask = torch.ones([batch_size, seq_length], device=sequence.device)
+            mask[:, :len_keep] = 0
+            # unshuffle to get the binary mask
+            mask = torch.gather(mask, dim=1, index=ids_restore)
+        else:
+            len_keep = torch.where(mask==0)[0].size()[0]
+            # sort noise for each sample
+            ids_shuffle = torch.argsort(mask, dim=1)  # ascend: small is keep, large is remove
+            ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+            # keep the first subset
+            ids_keep = ids_shuffle[:, :len_keep]
+            sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
 
         return sequence_unmasked, mask, ids_restore
 

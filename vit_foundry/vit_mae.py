@@ -94,10 +94,10 @@ class ViTMAE(nn.Module):
         torch.nn.init.ones_(self.decoder_norm.weight.data)
         torch.nn.init.zeros_(self.decoder_norm.bias.data)
 
-    def forward(self, pixel_values, output_attentions: bool = False):
+    def forward(self, pixel_values, output_attentions: bool = False, mask = None):
         h = self.patch_embedding(pixel_values)
         h = self.enc_positional_embedding(h)
-        h, mask, ids_restore = self.random_masking(h)
+        h, mask, ids_restore = self.random_masking(h, mask=mask)
 
         # add CLS token (has no positional encoding)
         cls_tokens = self.cls_token.expand(h.shape[0], -1, -1)
@@ -123,6 +123,7 @@ class ViTMAE(nn.Module):
         return {
             'logits': output,
             'loss': self.loss(pixel_values, output),
+            'aerial_loss': self.loss(pixel_values[:,:256,:], output[:,:256,:]),
             'mask': mask,
         }
 
