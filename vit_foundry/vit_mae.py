@@ -159,3 +159,22 @@ class ViTMAE(nn.Module):
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean()
+    
+
+    ## Multi-task mask generation
+
+    def fill_in_middle_mask(self):
+        num_patches_x = self.config.image_size[1] // self.config.patch_size
+        num_patches_y = self.config.image_size[0] // self.config.patch_size
+
+        mask = torch.zeros(num_patches_y, num_patches_x)
+
+        mask[2:(num_patches_y // 2) - 2, 2:num_patches_x - 2] = 1
+        return mask.flatten()
+
+
+    def random_task_mask(self):
+        if torch.rand(1) > 0.6:
+            return self.fill_in_middle_mask()
+        else:
+            return None

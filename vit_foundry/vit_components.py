@@ -220,6 +220,9 @@ class ViTMAERandomMasking(nn.Module):
             # unshuffle to get the binary mask
             mask = torch.gather(mask, dim=1, index=ids_restore)
         else:
+            if noise.shape[0] < batch_size:
+                noise = noise.repeat(batch_size, 1)
+            
             len_keep = torch.where(mask==0)[0].size()[0]
             # sort noise for each sample
             ids_shuffle = torch.argsort(mask, dim=1)  # ascend: small is keep, large is remove
