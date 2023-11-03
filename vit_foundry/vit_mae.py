@@ -169,12 +169,17 @@ class ViTMAE(nn.Module):
 
         mask = torch.zeros(num_patches_y, num_patches_x)
 
-        mask[2:(num_patches_y // 2) - 2, 2:num_patches_x - 2] = 1
+        if num_patches_x == num_patches_y:
+            # square image
+            mask[2:num_patches_y - 2, 2:num_patches_x - 2] = 1
+        else:
+            # rectangular image
+            mask[2:(num_patches_y // 2) - 2, 2:num_patches_x - 2] = 1
         return mask.flatten()
 
 
     def random_task_mask(self):
-        if torch.rand(1) > 0.6:
+        if torch.rand(1) > 0.5:
             return self.fill_in_middle_mask()
         else:
             return None
