@@ -175,7 +175,7 @@ class ViTMAE(nn.Module):
         else:
             # rectangular image
             mask[2:(num_patches_y // 2) - 2, 2:num_patches_x - 2] = 1
-        return mask.flatten()
+        return mask.flatten().unsqueeze(0)
 
 
     def random_task_mask(self):
