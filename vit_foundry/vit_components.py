@@ -232,6 +232,7 @@ class ViTMAERandomMasking(nn.Module):
             ids_keep = ids_shuffle[:, :len_keep]
             sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
 
+            mask.to(sequence.device)
         return sequence_unmasked, mask, ids_restore
 
 
