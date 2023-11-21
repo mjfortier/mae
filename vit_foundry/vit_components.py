@@ -220,6 +220,7 @@ class ViTMAERandomMasking(nn.Module):
             # unshuffle to get the binary mask
             mask = torch.gather(mask, dim=1, index=ids_restore)
         else:
+            mask = mask.to(sequence.device)
             len_keep = torch.where(mask==0)[0].size()[0]
             if mask.shape[0] < batch_size:
                 mask = mask.repeat(batch_size, 1)
@@ -231,8 +232,7 @@ class ViTMAERandomMasking(nn.Module):
             # keep the first subset
             ids_keep = ids_shuffle[:, :len_keep]
             sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
-
-            mask.to(sequence.device)
+        
         return sequence_unmasked, mask, ids_restore
 
 

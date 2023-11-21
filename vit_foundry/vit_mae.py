@@ -123,7 +123,7 @@ class ViTMAE(nn.Module):
         return {
             'logits': output,
             'loss': self.loss(pixel_values, output),
-            'aerial_loss': self.loss(pixel_values[:,:256,:], output[:,:256,:]),
+            'aerial_loss': self.loss(pixel_values[:,:256,:], output[:,:256,:]), # This is hacked in; change it soon.
             'mask': mask,
         }
 
@@ -179,7 +179,7 @@ class ViTMAE(nn.Module):
 
 
     def random_task_mask(self):
-        if torch.rand(1) > 0.5:
+        if torch.rand(1) > 1:
             return self.fill_in_middle_mask()
         else:
             return None
