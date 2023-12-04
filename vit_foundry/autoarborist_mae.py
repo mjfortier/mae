@@ -38,9 +38,7 @@ def vit_mae_huge_config():
     )
 
 
-# Custom image dataset; pytorch probably has something identical to this already, but
-# I'm just quickly throwing this in as a 100%-compatible dataset for dataloader.
-class ImageDataset(Dataset):
+class MultiImageDataset(Dataset):
     def __init__(self, root_dirs, split="train"):
         """
         Args:
@@ -125,6 +123,7 @@ class ViTMAE(nn.Module):
         return {
             'logits': output,
             'loss': self.loss(pixel_values, output),
+            'aerial_loss': self.loss(pixel_values[:,:256,:], output[:,:256,:]), # This is hacked in; change it soon.
             'mask': mask,
         }
 
@@ -160,3 +159,27 @@ class ViTMAE(nn.Module):
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean()
+    
+
+    ## Multi-task mask generation
+
+    def fill_in_middle_mask(self):
+        num_patches_x = self.config.image_size[1] // self.config.patch_size
+        num_patches_y = self.config.image_size[0] // self.config.patch_size
+
+        mask = torch.zeros(num_patches_y, num_patches_x)
+
+        if num_patches_x == num_patches_y:
+            # square image
+            mask[2:num_patches_y - 2, 2:num_patches_x - 2] = 1
+        else:
+            # rectangular image
+            mask[2:(num_patches_y // 2) - 2, 2:num_patches_x - 2] = 1
+        return mask.flatten().unsqueeze(0)
+
+
+    def random_task_mask(self):
+        if torch.rand(1) > 1:
+            return self.fill_in_middle_mask()
+        else:
+            return None

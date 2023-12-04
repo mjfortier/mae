@@ -40,7 +40,7 @@ def vit_mae_huge_config():
 
 # Custom image dataset; pytorch probably has something identical to this already, but
 # I'm just quickly throwing this in as a 100%-compatible dataset for dataloader.
-class ImageDataset(Dataset):
+class EncDecDataset(Dataset):
     def __init__(self, root_dirs, split="train"):
         """
         Args:
@@ -71,17 +71,17 @@ class ImageDataset(Dataset):
         return torch.cat(images, axis=1)
 
 
-class ViTMAE(nn.Module):
+class SiameseViT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
-        self.enc_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
-        self.dec_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
+        
         self.decoder = vc.ViTMAEDecoder(config)
         self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
         self.decoder_pred = nn.Linear(
@@ -95,6 +95,12 @@ class ViTMAE(nn.Module):
         torch.nn.init.normal_(self.decoder_pred.weight.data, std=self.config.initializer_range)
         torch.nn.init.ones_(self.decoder_norm.weight.data)
         torch.nn.init.zeros_(self.decoder_norm.bias.data)
+        
+    def masked_forward(self, enc_pixel_values, dec_pixel_values, output_attentions=False, mask=None):
+        enc_h = self.patch_embedding(enc_pixel_values)
+        dec_h = self.patch_embedding(dec_pixel_values)
+        
+        enc_h, dec_h, 
 
     def forward(self, pixel_values, output_attentions: bool = False, mask = None):
         h = self.patch_embedding(pixel_values)

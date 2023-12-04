@@ -270,14 +270,18 @@ class ViTMAEAttentionBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        cross_attention_states: Optional[torch.Tensor],
         head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
     ) -> torch.Tensor:
 
+        if cross_attention_states is None:
+            cross_attention_states = hidden_states # self attention
+        
         # QKV operations
         query_layer = self.transpose_for_scores(self.query(hidden_states))
-        key_layer   = self.transpose_for_scores(self.key(hidden_states))
-        value_layer = self.transpose_for_scores(self.value(hidden_states))
+        key_layer   = self.transpose_for_scores(self.key(cross_attention_states))
+        value_layer = self.transpose_for_scores(self.value(cross_attention_states))
     
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
@@ -340,6 +344,59 @@ class ViTMAELayer(nn.Module):
         
         if output_attentions:
             return (h, att)
+        else:
+            return (h, None)
+
+
+class ViTMAECrossAttentionLayer(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        self.layernorm_1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.attention = ViTMAEAttentionBlock(config)
+        self.layernorm_2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.cross_attention = ViTMAEAttentionBlock(config)
+        self.layernorm_3 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+        self.fc1 = nn.Linear(config.hidden_size, config.mlp_ratio * config.hidden_size)
+        if isinstance(config.hidden_act, str):
+            self.fc_act = ACT2FN[config.hidden_act]
+        else:
+            self.fc_act = config.hidden_act
+        self.fc2 = nn.Linear(config.mlp_ratio * config.hidden_size, config.hidden_size)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cross_attention_states: torch.Tensor,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+    ) -> torch.Tensor:
+        
+        h = self.layernorm_1(hidden_states)
+        h, att1 = self.attention(h, head_mask, output_attentions)
+        h = h + hidden_states
+        
+        intermediate = h
+        h = self.layernorm_2(hidden_states)
+        h, att2 = self.cross_attention(
+            h,
+            cross_attention_states=cross_attention_states,
+            head_mask=head_mask,
+            output_attentions=output_attentions)
+        h = h + intermediate
+        
+        intermediate = h
+        h = self.layernorm_3(h)
+        h = self.fc1(h)
+        h = self.fc_act(h)
+        h = self.fc2(h)
+        h = self.dropout(h)
+        h = h + intermediate
+        
+        if output_attentions:
+            return (h, [att1, att2])
         else:
             return (h, None)
 
@@ -420,5 +477,44 @@ class ViTMAEDecoder(nn.Module):
         else:
             return (hidden_states, None)
 
+
+class ViTEncoderDecoder(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        self.encoder_layers = nn.ModuleList([ViTMAELayer(config) for _ in range(config.num_hidden_layers)])
+        self.decoder_layers = nn.ModuleList([ViTMAECrossAttentionLayer(config) for _ in range(config.num_hidden_layers)])
+        self.initialize_weights()
+    
+    def initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+
+    def forward(
+        self,
+        enc_hidden_states: torch.Tensor,
+        dec_hidden_states: torch.Tensor,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+    ):
+        
+        enc_attentions = []
+        dec_attentions = []
+        for enc_module, dec_module in zip(self.encoder_layers, self.decoder_layers):
+            enc_hidden_states, enc_att = enc_module(enc_hidden_states, head_mask, output_attentions)
+            dec_hidden_states, dec_att = enc_module(dec_hidden_states, enc_hidden_states, head_mask, output_attentions)
+            enc_attentions.append(enc_att)
+            dec_attentions.append(dec_att)
+
+        if output_attentions:
+            return (enc_hidden_states, dec_hidden_states, [enc_attentions, dec_attentions])
+        else:
+            return (enc_hidden_states, dec_hidden_states, None)
 
 
