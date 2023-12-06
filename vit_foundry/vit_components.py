@@ -508,7 +508,7 @@ class ViTEncoderDecoder(nn.Module):
         dec_attentions = []
         for enc_module, dec_module in zip(self.encoder_layers, self.decoder_layers):
             enc_hidden_states, enc_att = enc_module(enc_hidden_states, head_mask, output_attentions)
-            dec_hidden_states, dec_att = enc_module(dec_hidden_states, enc_hidden_states, head_mask, output_attentions)
+            dec_hidden_states, dec_att = dec_module(dec_hidden_states, enc_hidden_states, head_mask, output_attentions)
             enc_attentions.append(enc_att)
             dec_attentions.append(dec_att)
 
