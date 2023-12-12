@@ -63,7 +63,7 @@ class EncDecDataset(Dataset):
                 post_rgb = self.transform(Image.open(post_rgb_file))
                 mask = self.transform(Image.open(mask_file)).squeeze()
 
-                self.image_files.append(pre_rgb, post_rgb, mask)
+                self.image_files.append((pre_rgb, post_rgb, mask))
         else:
             for file in os.listdir(os.path.join(self.root_dir, split, 'mask')):
                 self.image_files.append(file)
