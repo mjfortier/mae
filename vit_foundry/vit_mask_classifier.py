@@ -7,14 +7,15 @@ from torchvision import transforms
 from PIL import Image
 
 
-def vit_mae_base_config():
+def vit_mae_base_config(**kwargs):
     return vc.ViTMAEConfig(
         hidden_size = 768,
         num_hidden_layers = 12,
         num_attention_heads = 12,
         decoder_hidden_size = 512,
         decoder_num_hidden_layers = 8,
-        decoder_num_attention_heads = 16
+        decoder_num_attention_heads = 16,
+        **kwargs
     )
 
 def vit_mae_large_config():
@@ -40,12 +41,6 @@ def vit_mae_huge_config():
 
 class MaskClassifierDataset(Dataset):
     def __init__(self, root_dir, split="train"):
-        """
-        Args:
-            root_dir (string): Root dir path. It should contain a 'train' and 'test' subdir.
-                               Each subdir should contain an 'rgb' and 'mask' sub-subdir.
-                               The rgb and mask images should have identical names.
-        """
         self.root_dir = root_dir
         self.split = split
         self.transform = transforms.ToTensor()
@@ -56,6 +51,24 @@ class MaskClassifierDataset(Dataset):
 
     def __getitem__(self, idx):
         rgb = self.transform(Image.open(os.path.join(self.root_dir, self.split, 'rgb', self.image_files[idx])))
+        mask = self.transform(Image.open(os.path.join(self.root_dir, self.split, 'mask', self.image_files[idx])))
+        return rgb, mask
+
+
+class StackedMaskClassifierDataset(Dataset):
+    def __init__(self, root_dir, split="train"):
+        self.root_dir = root_dir
+        self.split = split
+        self.transform = transforms.ToTensor()
+        self.image_files = [f for f in os.listdir(os.path.join(root_dir, split, 'mask'))]
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        pre_rgb = self.transform(Image.open(os.path.join(self.root_dir, self.split, 'pre_rgb', self.image_files[idx])))
+        post_rgb = self.transform(Image.open(os.path.join(self.root_dir, self.split, 'post_rgb', self.image_files[idx])))
+        rgb = torch.vstack((pre_rgb, post_rgb))
         mask = self.transform(Image.open(os.path.join(self.root_dir, self.split, 'mask', self.image_files[idx])))
         return rgb, mask
 
@@ -78,7 +91,7 @@ class ViTMaskClassifier(nn.Module):
         torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
         torch.nn.init.normal_(self.mask_pred.weight.data, std=self.config.initializer_range)
 
-    def forward(self, pixel_values, mask, output_attentions: bool = False):
+    def forward(self, pixel_values, output_attentions: bool = False):
         '''
         pixel_values - (B, C, H, W)
         mask - (B, H, W)
@@ -99,10 +112,7 @@ class ViTMaskClassifier(nn.Module):
         h = self.activation(h)
 
         output = self.unpatchify(h)
-        return {
-            'logits': output,
-            'loss': self.loss(output, mask),
-        }
+        return output
 
     def unpatchify(self, patchified_pixel_values):
         """
@@ -129,7 +139,3 @@ class ViTMaskClassifier(nn.Module):
             num_patches_x * patch_size,
         )
         return pixel_values
-    
-    def loss(self, pred, target):
-        loss = (pred - target) ** 2
-        return loss.mean()

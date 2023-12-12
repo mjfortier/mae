@@ -41,34 +41,22 @@ def vit_mae_huge_config():
 # Custom image dataset; pytorch probably has something identical to this already, but
 # I'm just quickly throwing this in as a 100%-compatible dataset for dataloader.
 class ImageDataset(Dataset):
-    def __init__(self, root_dirs, split="train"):
+    def __init__(self, root_dir, split="train"):
         """
         Args:
             root_dirs (list[string]): One or more root dir paths. Each should have a 'train' and 'test' subdir
             split (string): Either "train" or "test"
         """
-        self.root_dirs = root_dirs
+        self.root_dir = root_dir
         self.split = split
         self.transform = transforms.ToTensor()
-        self.image_files = []
-        
-        for i, root_dir in enumerate(root_dirs):
-            self.image_files.append([f for f in os.listdir(os.path.join(root_dir, split)) if f.endswith('.png')])
-            self.image_files[i].sort()
+        self.image_files = [f for f in os.listdir(os.path.join(self.root_dir, self.split)) if f.endswith('.png')]
 
     def __len__(self):
-        return len(self.image_files[0])
+        return len(self.image_files)
 
     def __getitem__(self, idx):
-        images = []
-        for i, root_dir in enumerate(self.root_dirs):
-            images.append(
-                self.transform(
-                    Image.open(os.path.join(root_dir, self.split, self.image_files[i][idx]))
-                )
-            )
-
-        return torch.cat(images, axis=1)
+        return self.transform(Image.open(os.path.join(self.root_dir, self.split, self.image_files[idx])))
 
 
 class ViTMAE(nn.Module):

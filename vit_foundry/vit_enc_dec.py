@@ -41,7 +41,7 @@ def vit_mae_huge_config():
 # Custom image dataset; pytorch probably has something identical to this already, but
 # I'm just quickly throwing this in as a 100%-compatible dataset for dataloader.
 class EncDecDataset(Dataset):
-    def __init__(self, root_dir, split="train"):
+    def __init__(self, root_dir, split="train", in_memory=False):
         """
         Args:
             root_dirs (list[string]): One or more root dir paths. Each should have a 'train' and 'test' subdir
@@ -49,46 +49,54 @@ class EncDecDataset(Dataset):
         """
         self.root_dir = root_dir
         self.split = split
+        self.in_memory = in_memory
         self.transform = transforms.ToTensor()
         self.image_files = []
         
-        for file in os.listdir(os.path.join(self.root_dir, split, 'mask')):
-            self.image_files.append(file)
+        if self.in_memory:
+            for file in os.listdir(os.path.join(self.root_dir, split, 'mask')):
+                pre_rgb_file = os.path.join(self.root_dir, self.split, 'pre_rgb', file)
+                post_rgb_file = os.path.join(self.root_dir, self.split, 'post_rgb', file)
+                mask_file = os.path.join(self.root_dir, self.split, 'mask', file)
+
+                pre_rgb = self.transform(Image.open(pre_rgb_file))
+                post_rgb = self.transform(Image.open(post_rgb_file))
+                mask = self.transform(Image.open(mask_file)).squeeze()
+
+                self.image_files.append(pre_rgb, post_rgb, mask)
+        else:
+            for file in os.listdir(os.path.join(self.root_dir, split, 'mask')):
+                self.image_files.append(file)
 
     def __len__(self):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        file = self.image_files[idx]
-        pre_rgb_file = os.path.join(self.root_dir, self.split, 'pre_rgb', file)
-        post_rgb_file = os.path.join(self.root_dir, self.split, 'post_rgb', file)
-        mask_file = os.path.join(self.root_dir, self.split, 'mask', file)
+        if self.in_memory:
+            return self.image_files[idx]
+        else:
+            file = self.image_files[idx]
+            pre_rgb_file = os.path.join(self.root_dir, self.split, 'pre_rgb', file)
+            post_rgb_file = os.path.join(self.root_dir, self.split, 'post_rgb', file)
+            mask_file = os.path.join(self.root_dir, self.split, 'mask', file)
 
-        pre_rgb = self.transform(Image.open(pre_rgb_file))
-        post_rgb = self.transform(Image.open(post_rgb_file))
-        mask = self.transform(Image.open(mask_file)).squeeze()
+            pre_rgb = self.transform(Image.open(pre_rgb_file))
+            post_rgb = self.transform(Image.open(post_rgb_file))
+            mask = self.transform(Image.open(mask_file)).squeeze()
 
-        return pre_rgb, post_rgb, mask
+            return pre_rgb, post_rgb, mask
 
 
-class SiameseViT(nn.Module):
+class EncDecViT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
         self.positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
-        #self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.enc_dec = vc.ViTEncoderDecoder(config)
         self.pixel_projection = nn.Linear(config.hidden_size, config.patch_size * config.patch_size, bias=True)
-        #self.encoder = vc.ViTMAEEncoder(config)
-        #self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
-        
-        #self.decoder = vc.ViTMAEDecoder(config)
-        #self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
-        #self.decoder_pred = nn.Linear(
-        #    config.decoder_hidden_size, config.patch_size * config.patch_size * config.num_channels, bias=True
-        #)
+        self.sigmoid = nn.Sigmoid()
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -112,20 +120,13 @@ class SiameseViT(nn.Module):
         enc_h = self.positional_embedding(enc_h)
         dec_h = self.positional_embedding(dec_h)
 
-        # Do we even need CLS tokens for this?
-        #cls_tokens = self.cls_token.expand(h.shape[0], -1, -1)
-        #h = torch.cat((cls_tokens, h), dim=1)
 
-        # encoder
         enc_h, dec_h, _ = self.enc_dec(enc_h, dec_h, output_attentions=output_attentions)
-
-        # remove CLS
+        # We only use the decoder tokens for final image
         h = self.pixel_projection(dec_h)
 
         output = self.unpatchify(h)
-        return {
-            'logits': output
-        }
+        return self.sigmoid(output)
 
     def unpatchify(self, patchified_pixel_values):
         """
