@@ -76,40 +76,54 @@ class ViTMAEConfig():
 ########################
 
 class ViTMAEPatchEmbeddings(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, norm_layer=None):
         super().__init__()
         self.config = config
         self.num_channels = config.num_channels
+        self.embed_dim = config.hidden_size
         self.image_size = config.image_size
         self.patch_size = config.patch_size
-        self.num_patches = (self.image_size[1] // self.patch_size) * (self.image_size[0] // self.patch_size)
+        self.patches_resolution = [self.image_size[0] // self.patch_size, self.image_size[1] // self.patch_size]
+        self.num_patches = self.patches_resolution[0] * self.patches_resolution[1]
 
-        self.projection = nn.Conv2d(config.num_channels, config.hidden_size, kernel_size=self.patch_size, stride=self.patch_size)
+        self.projection = nn.Conv2d(self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size)
+        if norm_layer is not None:
+            self.norm = norm_layer(self.embed_dim)
         self.initialize_weights()
 
     def initialize_weights(self):
         self.projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
         self.projection.bias.data.zero_()
 
+    def maybe_pad(self, pixel_values, height, width):
+        if width % self.patch_size[1] != 0:
+            pad_values = (0, self.patch_size[1] - width % self.patch_size[1])
+            pixel_values = nn.functional.pad(pixel_values, pad_values)
+        if height % self.patch_size[0] != 0:
+            pad_values = (0, 0, 0, self.patch_size[0] - height % self.patch_size[0])
+            pixel_values = nn.functional.pad(pixel_values, pad_values)
+        return pixel_values
+
     def forward(self, pixel_values):
         '''
         (in)  pixel_values - (B,N,H,W)
-        (out) x - (B,S,H)
+        (out) embeddings - (B,S,H)
+              output_dimensions - tuple (new_height, new_width) of tokenized image
         '''
         _, num_channels, height, width = pixel_values.shape
         if num_channels != self.num_channels:
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
-        if height != self.image_size[0] or width != self.image_size[1]:
-            raise ValueError(
-                f"Input image size ({height}*{width}) doesn't match model ({self.image_size[0]}*{self.image_size[1]})."
-            )
-        x = self.projection(pixel_values).flatten(2).transpose(1, 2)
-        return x
+        pixel_values = self.maybe_pad(pixel_values, height, width)
+        embeddings = self.projection(pixel_values)
+        embeddings = embeddings.flatten(2).transpose(1, 2)
+        if self.norm is not None:
+            embeddings = self.norm(embeddings)
+        return embeddings
 
 
-class ViTMAEPositionalEmbeddings(nn.Module):
+class ViTSinCosPositionalEmbeddings(nn.Module):
     def __init__(self, image_size, patch_size, hidden_size):
         super().__init__()
         self.image_size = image_size

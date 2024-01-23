@@ -64,12 +64,12 @@ class ViTMAE(nn.Module):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
-        self.enc_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.enc_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
-        self.dec_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
+        self.dec_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
         self.decoder = vc.ViTMAEDecoder(config)
         self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
         self.decoder_pred = nn.Linear(
@@ -85,7 +85,7 @@ class ViTMAE(nn.Module):
         torch.nn.init.zeros_(self.decoder_norm.bias.data)
 
     def forward(self, pixel_values, output_attentions: bool = False, mask = None):
-        h = self.patch_embedding(pixel_values)
+        h, _ = self.patch_embedding(pixel_values)
         h = self.enc_positional_embedding(h)
         h, mask, ids_restore = self.random_masking(h, mask=mask)
 

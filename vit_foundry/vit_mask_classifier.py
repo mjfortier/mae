@@ -78,7 +78,7 @@ class ViTMaskClassifier(nn.Module):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
-        self.enc_positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.enc_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.encoder = vc.ViTMAEEncoder(config)
         self.mask_pred = nn.Linear(
@@ -96,7 +96,7 @@ class ViTMaskClassifier(nn.Module):
         pixel_values - (B, C, H, W)
         mask - (B, H, W)
         '''
-        h = self.patch_embedding(pixel_values)
+        h, _ = self.patch_embedding(pixel_values)
         h = self.enc_positional_embedding(h)
 
         # add CLS token (has no positional encoding)

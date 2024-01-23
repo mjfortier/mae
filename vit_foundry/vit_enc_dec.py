@@ -92,7 +92,7 @@ class EncDecViT(nn.Module):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
-        self.positional_embedding = vc.ViTMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
         self.enc_dec = vc.ViTEncoderDecoder(config)
         self.pixel_projection = nn.Linear(config.hidden_size, config.patch_size * config.patch_size, bias=True)
@@ -115,8 +115,8 @@ class EncDecViT(nn.Module):
         return enc_h, dec_h 
 
     def forward(self, enc_pixel_values, dec_pixel_values, output_attentions: bool = False, mask = None):
-        enc_h = self.patch_embedding(enc_pixel_values)
-        dec_h = self.patch_embedding(dec_pixel_values)
+        enc_h, _ = self.patch_embedding(enc_pixel_values)
+        dec_h, _ = self.patch_embedding(dec_pixel_values)
         enc_h = self.positional_embedding(enc_h)
         dec_h = self.positional_embedding(dec_h)
 
