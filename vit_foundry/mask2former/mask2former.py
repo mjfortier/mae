@@ -188,7 +188,7 @@ class Mask2FormerForUniversalSegmentation(nn.Module):
 
 
 
-
+""" 
 config = Mask2FormerConfig()
 model = Mask2FormerForUniversalSegmentation(config)
 
@@ -198,3 +198,4 @@ mask_labels = [torch.randn(2,224,224)]
 class_labels = [torch.Tensor([1, 3]).long()]
 
 op = model(ip, mask_labels=mask_labels, class_labels=class_labels, output_hidden_states=True)
+ """

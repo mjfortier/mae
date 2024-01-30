@@ -487,8 +487,8 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
-        assert H == self.img_size[0] and W == self.img_size[1], \
-            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        #assert H == self.img_size[0] and W == self.img_size[1], \
+        #    f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x).flatten(2).transpose(1, 2)  # B Ph*Pw C
         if self.norm is not None:
             x = self.norm(x)
@@ -611,12 +611,15 @@ class SwinTransformerV2(nn.Module):
         return rearrange(x.reshape((B, H, W, C)), 'b h w c -> b c h w')
 
     def forward(self, x):
+        print(x.shape)
         x = self.patch_embed(x)
+        print(x.shape)
         if self.ape:
             x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
         layer_outputs = []
         for i, layer in enumerate(self.layers):
+            print(x.shape)
             layer_outputs.append(self.squarify_patches(x, self.layer_patch_resolutions[i]))
             x = layer(x)
         
