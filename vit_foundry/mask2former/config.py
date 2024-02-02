@@ -9,6 +9,9 @@ import math
 
 @dataclass
 class Mask2FormerConfig():
+    img_size: Tuple[int] = (224,224)
+    window_size: int = 7,
+    backbone_embed_dim: int = 128
     fpn_hidden_size: int = 256
     transformer_hidden_size: int = 256
     mask_feature_size: int = 256

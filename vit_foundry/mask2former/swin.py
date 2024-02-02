@@ -465,9 +465,8 @@ class PatchEmbed(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer. Default: None
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
+    def __init__(self, img_size=(224,224), patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
         super().__init__()
-        img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
         patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
         self.img_size = img_size
@@ -527,8 +526,8 @@ class SwinTransformerV2(nn.Module):
         pretrained_window_sizes (tuple(int)): Pretrained window sizes of each layer.
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3,
-                 embed_dim=96, depths=[2, 2, 6], num_heads=[3, 6, 12],
+    def __init__(self, img_size=(224,224), patch_size=4, in_chans=3,
+                 embed_dim=96, depths=[2, 2, 6], num_heads=[4, 8, 16],
                  window_size=7, mlp_ratio=4., qkv_bias=True,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
@@ -541,19 +540,13 @@ class SwinTransformerV2(nn.Module):
         self.patch_norm = patch_norm
         self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers+1)]
         self.mlp_ratio = mlp_ratio
-
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
-        num_patches = self.patch_embed.num_patches
+
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution
-
-        # absolute position embedding
-        if self.ape:
-            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
-            trunc_normal_(self.absolute_pos_embed, std=.02)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -579,6 +572,7 @@ class SwinTransformerV2(nn.Module):
                                use_checkpoint=use_checkpoint,
                                pretrained_window_size=pretrained_window_sizes[i_layer])
             self.layers.append(layer)
+        self.final_patch_resolution = (self.layer_patch_resolutions[-1][0]//2, self.layer_patch_resolutions[-1][1]//2)
 
         self.norm = norm_layer(self.num_features[-1])
         self.avgpool = nn.AdaptiveAvgPool1d(1)
@@ -611,20 +605,15 @@ class SwinTransformerV2(nn.Module):
         return rearrange(x.reshape((B, H, W, C)), 'b h w c -> b c h w')
 
     def forward(self, x):
-        print(x.shape)
         x = self.patch_embed(x)
-        print(x.shape)
-        if self.ape:
-            x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
         layer_outputs = []
         for i, layer in enumerate(self.layers):
-            print(x.shape)
             layer_outputs.append(self.squarify_patches(x, self.layer_patch_resolutions[i]))
             x = layer(x)
         
-        layer_outputs.append(self.squarify_patches(x, (7,7)))
-
+        #layer_outputs.append(self.squarify_patches(x, (7,7)))
+        layer_outputs.append(self.squarify_patches(x, self.final_patch_resolution))
         return layer_outputs
 
     def flops(self):

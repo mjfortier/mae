@@ -367,12 +367,8 @@ class Mask2FormerLoss(nn.Module):
             - **loss_dice** -- The loss computed using dice loss on the predicted on the predicted and ground truth,
               masks.
         """
-        print([m.shape for m in mask_labels])
-        print([intermediate_mask_predictions.shape])
         src_idx = self._get_predictions_permutation_indices(indices)
         tgt_idx = self._get_targets_permutation_indices(indices)
-        print(src_idx)
-        print(tgt_idx)
         # shape (batch_size * num_queries, height, width)
         pred_masks = intermediate_mask_predictions[src_idx]
         # shape (batch_size, num_queries, height, width)
@@ -384,11 +380,11 @@ class Mask2FormerLoss(nn.Module):
         pred_masks = pred_masks[:, None]
         target_masks = target_masks[:, None]
 
+        # at this point, pred_masks and target_masks are both ([46,1,96,96]). Each dim0 is a mask to be compared.
         # Sample point coordinates
         with torch.no_grad():
             point_coordinates = self.sample_points_using_uncertainty(
                 pred_masks,
-                lambda logits: self.calculate_uncertainty(logits),
                 self.num_points,
                 self.oversample_ratio,
                 self.importance_sample_ratio,
@@ -419,27 +415,9 @@ class Mask2FormerLoss(nn.Module):
         target_indices = torch.cat([tgt for (_, tgt) in indices])
         return batch_indices, target_indices
 
-    def calculate_uncertainty(self, logits: torch.Tensor) -> torch.Tensor:
-        """
-        In Mask2Former paper, uncertainty is estimated as L1 distance between 0.0 and the logit prediction in 'logits'
-        for the foreground class in `classes`.
-
-        Args:
-            logits (`torch.Tensor`):
-            A tensor of shape (R, 1, ...) for class-specific or class-agnostic, where R is the total number of predicted masks in all images and C is:
-            the number of foreground classes. The values are logits.
-
-        Returns:
-            scores (`torch.Tensor`): A tensor of shape (R, 1, ...) that contains uncertainty scores with the most
-            uncertain locations having the highest uncertainty score.
-        """
-        uncertainty_scores = -(torch.abs(logits))
-        return uncertainty_scores
-
     def sample_points_using_uncertainty(
         self,
         logits: torch.Tensor,
-        uncertainty_function,
         num_points: int,
         oversample_ratio: int,
         importance_sample_ratio: float,
@@ -474,7 +452,7 @@ class Mask2FormerLoss(nn.Module):
         # Get sampled prediction value for the point coordinates
         point_logits = sample_point(logits, point_coordinates, align_corners=False)
         # Calculate the uncertainties based on the sampled prediction values of the points
-        point_uncertainties = uncertainty_function(point_logits)
+        point_uncertainties = -(torch.abs(point_logits)) # this is the uncertainty used in mask2former paper originally?
 
         num_uncertain_points = int(importance_sample_ratio * num_points)
         num_random_points = num_points - num_uncertain_points

@@ -1,5 +1,5 @@
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -15,12 +15,15 @@ from vit_foundry.mask2former.loss import Mask2FormerLoss
 class Mask2FormerModel(nn.Module):
     def __init__(
             self,
+            img_size: Tuple[int] = (224,224),
+            window_size: int = 7,
+            backbone_embed_dim = 96,
             fpn_hidden_size: int = 256,
             transformer_hidden_size: int = 256,
             num_queries: int = 32,
             ):
         super().__init__()
-        self.backbone_encoder = SwinTransformerV2()
+        self.backbone_encoder = SwinTransformerV2(img_size=img_size, embed_dim=backbone_embed_dim, window_size=window_size)
         self.pixel_decoder = MaskFormerPixelDecoder(
             lateral_widths=self.backbone_encoder.num_features,
             feature_size=fpn_hidden_size,
@@ -31,6 +34,18 @@ class Mask2FormerModel(nn.Module):
             hidden_size=transformer_hidden_size,
             num_queries=num_queries,
             )
+        
+        self.initialize_weights()
+    
+    def initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            elif isinstance(module, nn.LayerNorm) or isinstance(module, nn.GroupNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
 
 
     def forward(
@@ -69,6 +84,9 @@ class Mask2FormerForUniversalSegmentation(nn.Module):
         super().__init__()
         self.config = config
         self.model = Mask2FormerModel(
+            img_size=config.img_size,
+            window_size=config.window_size,
+            backbone_embed_dim=config.backbone_embed_dim,
             fpn_hidden_size=config.fpn_hidden_size,
             transformer_hidden_size=config.transformer_hidden_size,
             num_queries=config.num_queries,
