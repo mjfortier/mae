@@ -200,10 +200,17 @@ class ViTMAERandomMasking(nn.Module):
               because tokens are projected to the decoder hidden size before unshuffling.
         '''
         # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(h.shape[0], ids_restore.shape[1] + 1 - h.shape[1], 1)
-        h_ = torch.cat([h[:, 1:, :], mask_tokens], dim=1)  # no cls token
-        h_ = torch.gather(h_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, h.shape[2]))  # unshuffle
-        h = torch.cat([h[:, :1, :], h_], dim=1)  # append cls token
+        if ids_restore.shape[1] % 2 == 0:
+            # no CLS token
+            mask_tokens = self.mask_token.repeat(h.shape[0], ids_restore.shape[1] - h.shape[1], 1)
+            h = torch.cat([h, mask_tokens], dim=1)
+            h = torch.gather(h, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, h.shape[2]))  # unshuffle
+        else:
+            # with CLS token
+            mask_tokens = self.mask_token.repeat(h.shape[0], ids_restore.shape[1] + 1 - h.shape[1], 1)
+            h_ = torch.cat([h[:, 1:, :], mask_tokens], dim=1)  # no cls token
+            h_ = torch.gather(h_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, h.shape[2]))  # unshuffle
+            h = torch.cat([h[:, :1, :], h_], dim=1)  # append cls token
         return h
 
     def forward(self, sequence, mask=None):

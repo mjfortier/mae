@@ -9,34 +9,37 @@ from PIL import Image
 import json
 
 
-def vit_mae_base_config():
+def vit_mae_base_config(**kwargs):
     return vc.ViTMAEConfig(
         hidden_size = 768,
         num_hidden_layers = 12,
         num_attention_heads = 12,
         decoder_hidden_size = 512,
         decoder_num_hidden_layers = 8,
-        decoder_num_attention_heads = 16
+        decoder_num_attention_heads = 16,
+        **kwargs
     )
 
-def vit_mae_large_config():
+def vit_mae_large_config(**kwargs):
     return vc.ViTMAEConfig(
         hidden_size = 1024,
         num_hidden_layers = 24,
         num_attention_heads = 16,
         decoder_hidden_size = 512,
         decoder_num_hidden_layers = 8,
-        decoder_num_attention_heads = 16
+        decoder_num_attention_heads = 16,
+        **kwargs
     )
 
-def vit_mae_huge_config():
+def vit_mae_huge_config(**kwargs):
     return vc.ViTMAEConfig(
         hidden_size = 1280,
         num_hidden_layers = 32,
         num_attention_heads = 16,
         decoder_hidden_size = 512,
         decoder_num_hidden_layers = 8,
-        decoder_num_attention_heads = 16
+        decoder_num_attention_heads = 16,
+        **kwargs
     )
 
 
@@ -78,8 +81,6 @@ class GeospatialMAEDataset(Dataset):
         image = image[:, offset_h:offset_h+crop_h, offset_w:offset_w+crop_w]
 
         return (image, torch.tensor(meta['GSD']))
-
-
 
 
 class GeospatialMAEPositionalEmbeddings(nn.Module):
@@ -133,9 +134,7 @@ class GeospatialMAEPositionalEmbeddings(nn.Module):
         emb_sin_y = torch.sin(gsd * emb_y)
         emb_cos_y = torch.cos(gsd * emb_y)
         positional_embedding = torch.cat([emb_sin_x, emb_cos_x, emb_sin_y, emb_cos_y], dim=2)
-
         return tokens + positional_embedding
-
 
 
 class GeospatialMAE(nn.Module):
@@ -145,7 +144,6 @@ class GeospatialMAE(nn.Module):
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
         self.enc_positional_embedding = GeospatialMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
         self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
         self.dec_positional_embedding = GeospatialMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
@@ -157,20 +155,15 @@ class GeospatialMAE(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
         torch.nn.init.normal_(self.enc_dec_projection.weight.data, std=self.config.initializer_range)
         torch.nn.init.normal_(self.decoder_pred.weight.data, std=self.config.initializer_range)
         torch.nn.init.ones_(self.decoder_norm.weight.data)
         torch.nn.init.zeros_(self.decoder_norm.bias.data)
 
     def forward(self, pixel_values, gsd, output_attentions: bool = False, mask = None):
-        h, _ = self.patch_embedding(pixel_values)
+        h = self.patch_embedding(pixel_values)
         h = self.enc_positional_embedding(h, gsd)
         h, mask, ids_restore = self.random_masking(h, mask=mask)
-
-        # add CLS token (has no positional encoding)
-        cls_tokens = self.cls_token.expand(h.shape[0], -1, -1)
-        h = torch.cat((cls_tokens, h), dim=1)
 
         # encoder
         h, _ = self.encoder(h, output_attentions=output_attentions)
@@ -184,9 +177,6 @@ class GeospatialMAE(nn.Module):
         h, _ = self.decoder(h, output_attentions=output_attentions)
         h = self.decoder_norm(h)
         h = self.decoder_pred(h)
-
-        # remove CLS
-        h = h[:, 1:, :]
 
         output = self.unpatchify(h)
         return {
