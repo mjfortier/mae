@@ -37,7 +37,7 @@ class Mask2FormerModel(nn.Module):
         
         self.initialize_weights()
     
-    def initialize_weights(self):
+    def initialize_weights(self): # Just a really naive weight initialization for now
         for module in self.modules():
             if isinstance(module, (nn.Linear, nn.Conv2d)):
                 module.weight.data.normal_(mean=0.0, std=0.02)
@@ -79,7 +79,7 @@ class Mask2FormerModel(nn.Module):
 
 
 
-class Mask2FormerForUniversalSegmentation(nn.Module):
+class Mask2FormerPanopticSegmentation(nn.Module):
     def __init__(self, config: Mask2FormerConfig):
         super().__init__()
         self.config = config
@@ -203,6 +203,73 @@ class Mask2FormerForUniversalSegmentation(nn.Module):
             'transformer_decoder_hidden_states': transformer_decoder_hidden_states,
             'attentions': outputs['decoder_output']['attentions'],
         }
+
+
+
+class Mask2FormerSemanticSegmentation(nn.Module):
+    def __init__(self, config: Mask2FormerConfig):
+        super().__init__()
+        self.config = config
+        self.model = Mask2FormerModel(
+            img_size=config.img_size,
+            window_size=config.window_size,
+            backbone_embed_dim=config.backbone_embed_dim,
+            fpn_hidden_size=config.fpn_hidden_size,
+            transformer_hidden_size=config.transformer_hidden_size,
+            num_queries=config.num_queries,
+        )
+
+        self.weight_dict: Dict[str, float] = {
+            "loss_cross_entropy": config.class_weight,
+            "loss_mask": config.mask_weight,
+            "loss_dice": config.dice_weight,
+        }
+
+        self.class_predictor = nn.Linear(config.transformer_hidden_size, config.num_labels + 1)
+
+
+    def forward(
+        self,
+        pixel_values: Tensor,
+        labels: Optional[List[Tensor]] = None,
+        output_hidden_states: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+    ):
+
+        outputs = self.model(
+            pixel_values=pixel_values,
+            output_hidden_states=output_hidden_states or self.config.use_auxiliary_loss,
+            output_attentions=output_attentions,
+        )
+
+        
+
+        intermediate_mask_predictions = outputs['decoder_output']['intermediate_mask_predictions']
+
+        encoder_hidden_states = None
+        pixel_decoder_hidden_states = None
+        transformer_decoder_hidden_states = None
+
+        if output_hidden_states:
+            encoder_hidden_states = outputs['encoder_features']
+            pixel_decoder_hidden_states = outputs['multi_scale_features']
+            transformer_decoder_hidden_states = outputs['decoder_output']['all_hidden_states']
+
+
+        return {
+            'loss': loss,
+            'intermediate_mask_predictions': intermediate_mask_predictions[-1],
+            'encoder_last_hidden_state': outputs['encoder_features'][-1],
+            'pixel_decoder_last_hidden_state': outputs['mask_features'],
+            'transformer_decoder_last_hidden_state': outputs['decoder_output']['hidden_states'],
+            'encoder_hidden_states': encoder_hidden_states,
+            'pixel_decoder_hidden_states': pixel_decoder_hidden_states,
+            'transformer_decoder_hidden_states': transformer_decoder_hidden_states,
+            'attentions': outputs['decoder_output']['attentions'],
+        }
+
+
+
 
 
 

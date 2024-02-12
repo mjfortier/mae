@@ -89,6 +89,8 @@ class ViTMAEPatchEmbeddings(nn.Module):
         self.projection = nn.Conv2d(self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size)
         if norm_layer is not None:
             self.norm = norm_layer(self.embed_dim)
+        else:
+            self.norm = None
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -96,11 +98,11 @@ class ViTMAEPatchEmbeddings(nn.Module):
         self.projection.bias.data.zero_()
 
     def maybe_pad(self, pixel_values, height, width):
-        if width % self.patch_size[1] != 0:
-            pad_values = (0, self.patch_size[1] - width % self.patch_size[1])
+        if width % self.patch_size != 0:
+            pad_values = (0, self.patch_size - width % self.patch_size)
             pixel_values = nn.functional.pad(pixel_values, pad_values)
-        if height % self.patch_size[0] != 0:
-            pad_values = (0, 0, 0, self.patch_size[0] - height % self.patch_size[0])
+        if height % self.patch_size != 0:
+            pad_values = (0, 0, 0, self.patch_size - height % self.patch_size)
             pixel_values = nn.functional.pad(pixel_values, pad_values)
         return pixel_values
 
@@ -493,6 +495,10 @@ class ViTMAEDecoder(nn.Module):
 
 
 class ViTEncoderDecoder(nn.Module):
+    '''
+    Parallel encoder and decoder modules, where the decoder constantly gets cross-attention
+    from the encoder layers.
+    '''
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
