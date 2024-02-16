@@ -6,30 +6,25 @@ from torch import Tensor, nn
 import math
 
 
-
 @dataclass
 class Mask2FormerConfig():
-    img_size: Tuple[int] = (224,224)
-    window_size: int = 7,
-    backbone_embed_dim: int = 128
-    fpn_hidden_size: int = 256
+    # Transformer module parameters
     transformer_hidden_size: int = 256
-    mask_feature_size: int = 256
     num_queries: int = 32
-    num_labels: int = 10
-    hidden_dim: int = 256
-    encoder_feedforward_dim: int = 1024
-    activation_function: str = "relu"
-    encoder_layers: int = 6
-    decoder_layers: int = 10
+    num_layers: int = 6 # Each layer contains one sub-layer per feature pyramid map (3L in the paper)
     num_attention_heads: int = 8
-    dropout: float = 0.0
     dim_feedforward: int = 2048
+    activation_function: str = "relu"
+
+    # Mask2Former inference / loss parameters
+    num_labels: int = 10
+    dropout: float = 0.0
     no_object_weight: float = 0.1
     class_weight: float = 2.0
     mask_weight: float = 5.0
     dice_weight: float = 5.0
     train_num_points: int = 12544
+
     oversample_ratio: float = 3.0
     importance_sample_ratio: float = 0.75
     init_std: float = 0.02
@@ -99,6 +94,35 @@ class Mask2FormerConfig():
     """
 
 
+@dataclass
+class Mask2FormerBackboneOutput():
+    '''
+    Backbone includes the feature pyramid component. Examples:
+      - Swin Transformer with FPN
+      - ViTMAE with simple feature pyramid
+    
+    S == Feature pyramid hidden size
+    '''
+    mask_features: Tensor # The final, transformed output from the feature pyramid. (B,S,H/4,W/4)
+    feature_pyramid: List[Tensor] # Should be a list of [(B,S,H/16,W/16), (B,S,H/8,W/8), (B,S,H/4,W/4)]
+    encoder_features: List[Tensor] # Will vary, hidden states of encoder
+
+
+@dataclass
+class Mask2FormerTransformerOutput():
+    '''
+    Q == Number of queries
+    S == Transformer hidden size
+    '''
+    hidden_states: Tensor # Final output of the transformer module, (B,Q,S)
+    mask_predictions: List[Tensor] # [(B,Q,H/4,W/4), ...]
+    attentions : List[Tensor]
+
+
+@dataclass
+class Mask2FormerOutput():
+    loss: Tensor
+    auxiliary_logits: List # Dictionaries containing class logits and masks from intermediate layers
 
 
 class Mask2FormerSinePositionEmbedding(nn.Module):
@@ -138,3 +162,34 @@ class Mask2FormerSinePositionEmbedding(nn.Module):
         pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
         pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
         return pos
+
+
+
+''' TODO: Switch things to use this implementation.
+The issue is that this assumes the input is not flattened.
+
+class ViTSinCosPositionalEmbeddings(nn.Module):
+    def __init__(self, temperature: int = 10000):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, x: Tensor, GSD: Optional[Tensor] = None) -> Tensor:
+        B, S, H, W = x.shape
+        grid = torch.ones((B, H, W), device=x.device, dtype=torch.x.dtype)
+        y_embed = grid.cumsum(1)
+        x_embed = grid.cumsum(2)
+        if GSD is not None:
+            GSD = GSD.unsqueeze(1).unsqueeze(2)
+            x_embed *= GSD
+            y_embed *= GSD
+
+        dim_t = torch.arange(S / 2, dtype=x.dtype, device=x.device)
+        dim_t = self.temperature ** (4 * torch.div(dim_t, 2, rounding_mode="floor") / S)
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        return x + pos
+'''

@@ -12,7 +12,6 @@ import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import numpy as np
 from einops import rearrange
-import math
 
 
 class Mlp(nn.Module):

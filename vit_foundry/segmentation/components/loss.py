@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 from scipy.optimize import linear_sum_assignment
-from vit_foundry.mask2former.config import Mask2FormerConfig
+from vit_foundry.segmentation.config import Mask2FormerConfig
 
 
 def sample_point(

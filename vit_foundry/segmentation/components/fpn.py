@@ -3,10 +3,10 @@ from typing import Dict, List, Optional, Tuple
 
 from torch import Tensor, nn
 
-from vit_foundry.mask2former.config import Mask2FormerSinePositionEmbedding
+from vit_foundry.segmentation.config import Mask2FormerSinePositionEmbedding
 
 
-class MaskFormerFPNConvLayer(nn.Module):
+class FPNConvLayer(nn.Module):
     def __init__(self, in_features: int, out_features: int, kernel_size: int = 3, padding: int = 1):
         """
         A basic module that executes conv - norm - in sequence used in MaskFormer.
@@ -39,7 +39,7 @@ class MaskFormerFPNConvLayer(nn.Module):
         return hidden_state
 
 
-class MaskFormerFPNLayer(nn.Module):
+class FPNLayer(nn.Module):
     def __init__(self, in_features: int, lateral_features: int):
         """
         A Feature Pyramid Network Layer (FPN) layer. It creates a feature map by aggregating features from the previous
@@ -57,7 +57,7 @@ class MaskFormerFPNLayer(nn.Module):
             nn.GroupNorm(32, in_features),
         )
 
-        self.block = MaskFormerFPNConvLayer(in_features, in_features)
+        self.block = FPNConvLayer(in_features, in_features)
 
     def forward(self, down: Tensor, left: Tensor) -> Tensor:
         left = self.proj(left)
@@ -67,7 +67,7 @@ class MaskFormerFPNLayer(nn.Module):
         return down
 
     
-class MaskFormerPixelDecoder(nn.Module):
+class FeaturePyramidNetwork(nn.Module):
     def __init__(self, lateral_widths: List[int], feature_size: int = 256, mask_feature_size: int = 256):
         r"""
         Pixel Decoder Module proposed in [Per-Pixel Classification is Not All You Need for Semantic
@@ -85,10 +85,10 @@ class MaskFormerPixelDecoder(nn.Module):
         super().__init__()
         encoder_final_width = lateral_widths[-1]
         encoder_medial_widths = lateral_widths[:-1]
-        self.stem = MaskFormerFPNConvLayer(encoder_final_width, feature_size)
+        self.stem = FPNConvLayer(encoder_final_width, feature_size)
         
         self.layers = nn.Sequential(
-            *[MaskFormerFPNLayer(feature_size, lateral_width) for lateral_width in encoder_medial_widths[::-1]]
+            *[FPNLayer(feature_size, lateral_width) for lateral_width in encoder_medial_widths[::-1]]
         )
         self.mask_projection = nn.Conv2d(feature_size, mask_feature_size, kernel_size=3, padding=1)
         num_pos_feats = feature_size // 2

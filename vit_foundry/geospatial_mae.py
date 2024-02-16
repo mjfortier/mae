@@ -76,8 +76,8 @@ class GeospatialMAEDataset(Dataset):
         crop_h, crop_w = self.image_size
         h = meta['height']
         w = meta['width']
-        offset_h = np.random.randint(h - crop_h)
-        offset_w = np.random.randint(w - crop_w)
+        offset_h = np.random.randint(h - crop_h) if h > crop_h else 0
+        offset_w = np.random.randint(w - crop_w) if w > crop_w else 0
         image = image[:, offset_h:offset_h+crop_h, offset_w:offset_w+crop_w]
 
         return (image, torch.tensor(meta['GSD']))
