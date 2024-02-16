@@ -19,7 +19,7 @@ class ViTDetBackbone(nn.Module):
     def __init__(self, config: ViTDetBackboneConfig):
         super().__init__()
         self.config = config
-        self.pyramid_depth = len(self.config.fpn_layer_resolutions)
+        self.pyramid_depth = len(self.config.fpn_layer_resolutions) - 1
         self.mae = ViTDet(config)
 
         self.pyramid_layers = []

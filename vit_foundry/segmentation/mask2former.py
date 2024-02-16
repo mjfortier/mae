@@ -1,13 +1,48 @@
-
+from dataclasses import dataclass
 from typing import Dict, List, Optional
-
-import torch
 from torch import Tensor, nn
-
-from config import Mask2FormerConfig, Mask2FormerOutput
-from components.transformer_module import Mask2FormerTransformerModule
-from components.loss import Mask2FormerLoss
+from .config import Mask2FormerBackboneOutput, Mask2FormerTransformerOutput
+from .components.transformer_module import Mask2FormerTransformerModule
+from .components.loss import Mask2FormerLoss
 from timm.models.layers import trunc_normal_
+
+
+@dataclass
+class Mask2FormerConfig():
+    # Transformer module parameters
+    transformer_hidden_size: int = 256
+    num_queries: int = 32
+    num_layers: int = 6 # Each layer contains one sub-layer per feature pyramid map (3L in the paper)
+    num_attention_heads: int = 8
+    dim_feedforward: int = 2048
+    activation_function: str = "relu"
+
+    # Mask2Former inference / loss parameters
+    num_labels: int = 10
+    dropout: float = 0.0
+    no_object_weight: float = 0.1
+    class_weight: float = 2.0
+    mask_weight: float = 5.0
+    dice_weight: float = 5.0
+    train_num_points: int = 12544
+    use_auxiliary_loss: bool = True
+
+    oversample_ratio: float = 3.0
+    importance_sample_ratio: float = 0.75
+    init_std: float = 0.02
+    init_xavier_std: float = 1.0
+    output_auxiliary_logits: bool = None
+
+
+@dataclass
+class Mask2FormerOutput():
+    class_queries_logits: Tensor
+    mask_predictions: Tensor
+    loss: Tensor
+    intermediate_class_queries_logits: List[Tensor] = None
+    intermediate_mask_predictions: List[Tensor] = None
+    backbone_output: Mask2FormerBackboneOutput = None
+    transformer_module_output: Mask2FormerTransformerOutput = None
 
 
 class Mask2FormerModel(nn.Module):
@@ -21,7 +56,6 @@ class Mask2FormerModel(nn.Module):
     def __init__(self, config: Mask2FormerConfig, backbone: nn.Module):
         super().__init__()
         self.config = config
-
         self.backbone = backbone
 
         self.transformer_module = Mask2FormerTransformerModule(
@@ -45,21 +79,20 @@ class Mask2FormerModel(nn.Module):
         self.criterion = Mask2FormerLoss(config=config, weight_dict=self.weight_dict)
         self._init_weights()
 
-
     def _init_weights(self):
         # Backbone and transformer_module weights are assumed to be initialized
         trunc_normal_(self.class_predictor.weight, std=0.02)
         nn.init.constant_(self.class_predictor.bias, 0)
 
-
     def forward(
         self,
         pixel_values: Tensor,
+        scaling: Optional[Tensor] = None,
         mask_labels: Optional[List[Tensor]] = None,
         class_labels: Optional[List[Tensor]] = None,
         output_hidden_states: Optional[bool] = None,
     ) -> Mask2FormerOutput:
-        backbone_output = self.backbone(pixel_values)
+        backbone_output = self.backbone(pixel_values, scaling=scaling)
 
         transformer_module_output = self.transformer_module(
             mask_features=backbone_output.mask_features,
@@ -73,11 +106,11 @@ class Mask2FormerModel(nn.Module):
         if mask_labels is not None and class_labels is not None:
             auxiliary_predictions = [(masks, logits) for masks, logits in zip(mask_predictions[:-1], class_queries_logits[:-1])]
             loss_dict = self.criterion(
-                intermediate_mask_predictions=mask_predictions[-1], # final mask set prediction
+                mask_predictions=mask_predictions[-1], # final mask set prediction
                 class_queries_logits=class_queries_logits[-1], # final class set prediction
                 mask_labels=mask_labels,
                 class_labels=class_labels,
-                auxiliary_predictions=auxiliary_predictions if config.use_auxiliary_loss else None,
+                auxiliary_predictions=auxiliary_predictions if self.config.use_auxiliary_loss else None,
             )
             # weight each loss by `self.weight_dict[<LOSS_NAME>]` including auxiliary losses
             # TODO: make sure this works w.r.t. iterator mutability
@@ -100,8 +133,6 @@ class Mask2FormerModel(nn.Module):
             output['transformer_module_output'] = transformer_module_output
 
         return Mask2FormerOutput(**output)
-
-
 
 
 # from backbones.swin_fpn import SwinFPNBackbone, SwinFPNBackboneConfig

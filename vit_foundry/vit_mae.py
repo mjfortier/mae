@@ -90,7 +90,7 @@ class ViTMAE(nn.Module):
             torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
 
     def forward(self, pixel_values, scaling: torch.Tensor = None, output_attentions: bool = False, mask = None):
-        h, _ = self.patch_embedding(pixel_values)
+        h = self.patch_embedding(pixel_values)
         h = self.enc_positional_embedding(h, scaling=scaling)
         h, mask, ids_restore = self.random_masking(h, mask=mask)
 

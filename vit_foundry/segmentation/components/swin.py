@@ -144,10 +144,6 @@ class WindowAttention(nn.Module):
         x = self.proj_drop(x)
         return x
 
-    def extra_repr(self) -> str:
-        return f'dim={self.dim}, window_size={self.window_size}, ' \
-               f'pretrained_window_size={self.pretrained_window_size}, num_heads={self.num_heads}'
-
     """
     def flops(self, N):
         # calculate flops for 1 window with token length of N
@@ -312,9 +308,6 @@ class PatchMerging(nn.Module):
 
         return x
 
-    def extra_repr(self) -> str:
-        return f"input_resolution={self.input_resolution}, dim={self.dim}"
-
     """
     def flops(self):
         H, W = self.input_resolution
@@ -401,9 +394,6 @@ class BasicLayer(nn.Module):
             return x, H, W, x_down, Wh, Ww
         else:
             return x, H, W, x, H, W
-
-    def extra_repr(self) -> str:
-        return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
 
     """
     def flops(self):

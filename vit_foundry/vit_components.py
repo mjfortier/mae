@@ -111,7 +111,6 @@ class ViTMAEPatchEmbeddings(nn.Module):
         '''
         (in)  pixel_values - (B,N,H,W)
         (out) embeddings - (B,S,H)
-              output_dimensions - tuple (new_height, new_width) of tokenized image
         '''
         _, num_channels, height, width = pixel_values.shape
         if num_channels != self.num_channels:

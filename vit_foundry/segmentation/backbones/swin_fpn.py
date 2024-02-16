@@ -25,7 +25,7 @@ class SwinFPNBackbone(nn.Module):
     def __init__(self, config: SwinFPNBackboneConfig, checkpoint: str = None):
         super().__init__()
         self.config = config
-        self.pyramid_depth = len(self.config.depths)
+        self.pyramid_depth = len(self.config.depths) - 1
         self.swin = SwinTransformerV2(
             window_size=config.window_size,
             embed_dim=config.backbone_embed_dim,
@@ -53,7 +53,7 @@ class SwinFPNBackbone(nn.Module):
         self.swin.load_state_dict(renamed_state_dict, strict=False)
 
 
-    def forward(self, pixel_values: Tensor) -> Mask2FormerBackboneOutput:
+    def forward(self, pixel_values: Tensor, **kwargs) -> Mask2FormerBackboneOutput:
         swin_features = self.swin(pixel_values)
         fpn_features = self.fpn(swin_features)
         return Mask2FormerBackboneOutput(fpn_features[0], fpn_features[1], swin_features)

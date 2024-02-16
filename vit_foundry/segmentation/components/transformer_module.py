@@ -333,7 +333,6 @@ class Mask2FormerTransformerModule(nn.Module):
         feature_pyramid_with_level_embedding = []
         feature_pyramid_positional_embeddings = []
         size_list = []
-
         for i in range(self.num_feature_levels):
             size_list.append(feature_pyramid[i].shape[-2:])
             feature_pyramid_positional_embeddings.append(self.position_embedder(feature_pyramid[i]).flatten(2))

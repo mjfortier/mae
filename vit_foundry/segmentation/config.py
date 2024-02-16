@@ -55,13 +55,3 @@ class Mask2FormerTransformerOutput():
     mask_predictions: List[Tensor] # [(B,Q,H/4,W/4), ...]
     attentions : List[Tensor]
 
-
-@dataclass
-class Mask2FormerOutput():
-    class_queries_logits: Tensor
-    mask_predictions: Tensor
-    loss: Tensor
-    intermediate_class_queries_logits: List[Tensor] = None
-    intermediate_mask_predictions: List[Tensor] = None
-    backbone_output: Mask2FormerBackboneOutput = None
-    transformer_module_output: Mask2FormerTransformerOutput = None
