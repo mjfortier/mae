@@ -66,7 +66,11 @@ class ViTMAE(nn.Module):
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
         self.enc_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+
+        self.cls_token = None
+        if config.cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+        
         self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
         self.dec_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
@@ -78,20 +82,22 @@ class ViTMAE(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
         torch.nn.init.normal_(self.enc_dec_projection.weight.data, std=self.config.initializer_range)
         torch.nn.init.normal_(self.decoder_pred.weight.data, std=self.config.initializer_range)
         torch.nn.init.ones_(self.decoder_norm.weight.data)
         torch.nn.init.zeros_(self.decoder_norm.bias.data)
+        if self.cls_token is not None:
+            torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
 
-    def forward(self, pixel_values, output_attentions: bool = False, mask = None):
+    def forward(self, pixel_values, scaling: torch.Tensor = None, output_attentions: bool = False, mask = None):
         h, _ = self.patch_embedding(pixel_values)
-        h = self.enc_positional_embedding(h)
+        h = self.enc_positional_embedding(h, scaling=scaling)
         h, mask, ids_restore = self.random_masking(h, mask=mask)
 
-        # add CLS token (has no positional encoding)
-        cls_tokens = self.cls_token.expand(h.shape[0], -1, -1)
-        h = torch.cat((cls_tokens, h), dim=1)
+        # add CLS token
+        if self.cls_token is not None:
+            cls_tokens = self.cls_token.expand(h.shape[0], -1, -1)
+            h = torch.cat((cls_tokens, h), dim=1)
 
         # encoder
         h, _ = self.encoder(h, output_attentions=output_attentions)
@@ -99,7 +105,7 @@ class ViTMAE(nn.Module):
         # latent
         h = self.enc_dec_projection(h)
         h = self.random_masking.add_mask_tokens_and_unshuffle(h, ids_restore)
-        h = self.dec_positional_embedding(h)
+        h = self.dec_positional_embedding(h, scaling=scaling)
 
         # decoder
         h, _ = self.decoder(h, output_attentions=output_attentions)
@@ -107,7 +113,8 @@ class ViTMAE(nn.Module):
         h = self.decoder_pred(h)
 
         # remove CLS
-        h = h[:, 1:, :]
+        if self.cls_token is not None:
+            h = h[:, 1:, :]
 
         output = self.unpatchify(h)
         return {

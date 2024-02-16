@@ -69,6 +69,7 @@ class ViTMAEConfig():
     decoder_mlp_ratio: int = 4
     mask_ratio: float = 0.75
     norm_pix_loss: bool = False
+    cls_token: bool = False
 
 
 ########################
