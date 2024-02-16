@@ -126,62 +126,95 @@ class ViTMAEPatchEmbeddings(nn.Module):
 
 
 class ViTSinCosPositionalEmbeddings(nn.Module):
-    def __init__(self, image_size, patch_size, hidden_size):
+    '''
+    This module takes input of shape (Batch, seq_len, hidden_size)
+    Advantage: May be slightly more performant as some parameters are cached
+    Disadvantage: Requires knowledge of image parameters at initialization; less flexible
+    '''
+    def __init__(self, image_size, patch_size, hidden_size, temperature: int = 10000):
         super().__init__()
         self.image_size = image_size
         self.patch_size = patch_size
         self.hidden_size = hidden_size
+        self.temperature = temperature
         self.num_patches_y = self.image_size[0] // self.patch_size
         self.num_patches_x = self.image_size[1] // self.patch_size
         self.num_patches = self.num_patches_y * self.num_patches_x
 
-        self.position_embeddings = nn.Parameter(
-            torch.zeros(1, self.num_patches, self.hidden_size), requires_grad=False
+        self.position_embeddings_block_x = nn.Parameter(
+            torch.zeros(1, self.num_patches, self.hidden_size // 4), requires_grad=False
+        )
+        self.position_embeddings_block_y = nn.Parameter(
+            torch.zeros(1, self.num_patches, self.hidden_size // 4), requires_grad=False
         )
         self.initialize_weights()
 
     def initialize_weights(self):
         assert self.hidden_size % 4 == 0, "embed_dim must be divisible by 4"
-        grid_h = np.arange(self.num_patches_y, dtype=np.float32)
-        grid_w = np.arange(self.num_patches_x, dtype=np.float32)
-        grid = np.meshgrid(grid_w, grid_h)  # here w goes first
-        grid = np.stack(grid, axis=0)
-        grid = grid.reshape([2, 1, self.num_patches_y, self.num_patches_x])
+        grid_h = np.arange(self.num_patches_y, dtype=float)
 
-        # use half of dimensions to encode grid_h
-        emb_h = self.get_1d_sincos_pos_embed_from_grid(grid[0])  # (H*W, D/2)
-        emb_w = self.get_1d_sincos_pos_embed_from_grid(grid[1])  # (H*W, D/2)
-        emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+        embed_dim = self.hidden_size // 4 # sin, cos, x, y
+        omega = np.arange(embed_dim, dtype=float) / embed_dim
+        omega = 1.0 / self.temperature**omega
+        block = np.einsum("m,d->md", grid_h, omega)
+        block_x = np.concatenate([block] * self.num_patches_x, axis=0)
+        block_y = np.repeat(block, self.num_patches_x, axis=0)
 
-        self.position_embeddings.data.copy_(torch.from_numpy(emb).float().unsqueeze(0))
+        self.position_embeddings_block_x.data.copy_(torch.from_numpy(block_x).float().unsqueeze(0))
+        self.position_embeddings_block_y.data.copy_(torch.from_numpy(block_y).float().unsqueeze(0))
 
-    def get_1d_sincos_pos_embed_from_grid(self, pos):
-        embed_dim = self.hidden_size // 2
 
-        omega = np.arange(embed_dim // 2, dtype=float)
-        omega /= embed_dim / 2.0
-        omega = 1.0 / 10000**omega  # (D/2,)
-
-        pos = pos.reshape(-1)  # (M,)
-        out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
-
-        emb_sin = np.sin(out)  # (M, D/2)
-        emb_cos = np.cos(out)  # (M, D/2)
-
-        emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
-        return emb
-
-    def forward(self, embeddings):
+    def forward(self, tokens, scaling = None):
         '''
-        (in)  embeddings - (B,S,H)
-        (out) embeddings - (B,S,H)
+        (in)  embeddings - (B,L,S)
+              gsd - (B)
+        (out) embeddings - (B,L,S)
         '''
-        # check for CLS token - don't need to add positional embedding to it
-        if embeddings.shape[1] == self.num_patches + 1:
-            embeddings[:,1:] = embeddings[:,1:] + self.position_embeddings
-        else:
-            embeddings = embeddings + self.position_embeddings
-        return embeddings
+        # Assumes no CLS token
+        B, _, _ = tokens.shape
+        x_embed = self.position_embeddings_block_x.repeat(B, 1, 1)
+        y_embed = self.position_embeddings_block_y.repeat(B, 1, 1)
+
+        if scaling is not None:
+            scaling = scaling.reshape(B, 1, 1)
+            x_embed *= scaling
+            y_embed *= scaling
+
+        emb_sin_x = torch.sin(x_embed) # (B, S, H/4)
+        emb_cos_x = torch.cos(x_embed)
+        emb_sin_y = torch.sin(y_embed)
+        emb_cos_y = torch.cos(y_embed)
+        positional_embedding = torch.cat([emb_sin_x, emb_cos_x, emb_sin_y, emb_cos_y], dim=2)
+        return tokens + positional_embedding
+    
+    
+class ViTSinCosPositionalSquareEmbeddings(nn.Module):
+    '''
+    This module takes input of shape (Batch, hidden_size, H, W)
+    Advantage: Image size agnostic, and keeps patches in rectangular shape
+    Disadvantage: More computation on-the-fly as the embeddings are recalculated
+    '''
+    def __init__(self, temperature: int = 10000):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, x: torch.Tensor, scaling: Optional[torch.Tensor] = None) -> torch.Tensor:
+        B, S, H, W = x.shape
+        grid = torch.ones((B, H, W), device=x.device, dtype=x.dtype)
+        y_embed = grid.cumsum(1) - 1.0
+        x_embed = grid.cumsum(2) - 1.0
+        if scaling is not None:
+            scaling = scaling.reshape(B, 1, 1)
+            x_embed *= scaling
+            y_embed *= scaling
+
+        dim_t = torch.arange(S / 4, dtype=x.dtype, device=x.device)
+        dim_t = self.temperature ** (4 * dim_t / S)
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        pos = torch.cat((pos_x.sin(), pos_x.cos(), pos_y.sin(), pos_y.cos()), dim=3).permute(0, 3, 1, 2)
+        return x + pos
 
 
 class ViTMAERandomMasking(nn.Module):

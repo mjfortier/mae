@@ -3,8 +3,8 @@ from typing import List, Optional
 
 import torch
 from torch import Tensor, nn
-from vit_foundry.vit_components import ACT2FN
-from vit_foundry.segmentation.config import Mask2FormerSinePositionEmbedding, Mask2FormerTransformerOutput
+from vit_foundry.vit_components import ACT2FN, ViTSinCosPositionalSquareEmbeddings
+from vit_foundry.segmentation.config import Mask2FormerTransformerOutput
 
 
 class Mask2FormerMaskPredictor(nn.Module):
@@ -304,7 +304,7 @@ class Mask2FormerTransformerModule(nn.Module):
         super().__init__()
         self.num_feature_levels = num_feature_levels
 
-        self.position_embedder = Mask2FormerSinePositionEmbedding(num_pos_feats=hidden_size // 2, normalize=True)
+        self.position_embedder = ViTSinCosPositionalSquareEmbeddings()
         self.query_embeddings = nn.Embedding(num_queries, hidden_size)
         self.query_positional_embeddings = nn.Embedding(num_queries, hidden_size)
         self.input_projections = []
@@ -330,15 +330,13 @@ class Mask2FormerTransformerModule(nn.Module):
             mask_features: Tensor,
             feature_pyramid: List[Tensor],
     ) -> Mask2FormerTransformerOutput:
-        # mask_features is the final backbone output. It has the same dimensions as the
-        # last map in the feature pyramid, but mask_features has additional transforms.
         feature_pyramid_with_level_embedding = []
         feature_pyramid_positional_embeddings = []
         size_list = []
 
         for i in range(self.num_feature_levels):
             size_list.append(feature_pyramid[i].shape[-2:])
-            feature_pyramid_positional_embeddings.append(self.position_embedder(feature_pyramid[i], None).flatten(2))
+            feature_pyramid_positional_embeddings.append(self.position_embedder(feature_pyramid[i]).flatten(2))
             feature_pyramid_with_level_embedding.append(
                 self.input_projections[i](feature_pyramid[i]).flatten(2)
                 + self.level_embed.weight[i][None, :, None]
@@ -365,9 +363,8 @@ class Mask2FormerTransformerModule(nn.Module):
 
         return Mask2FormerTransformerOutput(**decoder_output)
 
-"""
-Problems with this transformer module
-- Layernorm on original tokens to be explored
-- Dropout to be explored
-- Initialization to be explored
-"""
+
+# Problems with this transformer module
+# - Layernorm on original tokens to be explored
+# - Dropout to be explored
+# - Initialization to be explored

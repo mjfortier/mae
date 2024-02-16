@@ -4,13 +4,20 @@ from typing import Dict, List, Optional
 import torch
 from torch import Tensor, nn
 
-from config import Mask2FormerConfig
+from config import Mask2FormerConfig, Mask2FormerOutput
 from components.transformer_module import Mask2FormerTransformerModule
 from components.loss import Mask2FormerLoss
 from timm.models.layers import trunc_normal_
 
 
 class Mask2FormerModel(nn.Module):
+    '''
+    Custom Mask2Former model, based heavily on the HuggingFace implementation.
+    https://github.com/huggingface/transformers/blob/main/src/transformers/models/mask2former/modeling_mask2former.py
+
+    Backbone here refers to both an encoder, and a feature pyramid constructor.
+    Examples: (Swin Transformer + FPN), (ViTMAE + simple pyramid)
+    '''
     def __init__(self, config: Mask2FormerConfig, backbone: nn.Module):
         super().__init__()
         self.config = config
@@ -51,7 +58,7 @@ class Mask2FormerModel(nn.Module):
         mask_labels: Optional[List[Tensor]] = None,
         class_labels: Optional[List[Tensor]] = None,
         output_hidden_states: Optional[bool] = None,
-    ):
+    ) -> Mask2FormerOutput:
         backbone_output = self.backbone(pixel_values)
 
         transformer_module_output = self.transformer_module(
@@ -82,9 +89,9 @@ class Mask2FormerModel(nn.Module):
             loss = sum(loss_dict.values())
 
         output = {
-            'loss': loss,
             'class_queries_logits': class_queries_logits[-1],
             'mask_predictions': mask_predictions[-1],
+            'loss': loss,
         }
         if output_hidden_states:
             output['intermediate_class_queries_logits'] = class_queries_logits[:-1]
@@ -92,17 +99,17 @@ class Mask2FormerModel(nn.Module):
             output['backbone_output'] = backbone_output
             output['transformer_module_output'] = transformer_module_output
 
-        return output
+        return Mask2FormerOutput(**output)
 
 
 
 
-from backbones.swin_fpn import SwinFPNBackbone, SwinFPNBackboneConfig
-bb_config = SwinFPNBackboneConfig()
-backbone = SwinFPNBackbone(bb_config)
-config = Mask2FormerConfig()
-model = Mask2FormerPanopticSegmentation(config, backbone)
-input = torch.randn(5,3,224,224)
-op = model(input, output_hidden_states=True)
+# from backbones.swin_fpn import SwinFPNBackbone, SwinFPNBackboneConfig
+# bb_config = SwinFPNBackboneConfig()
+# backbone = SwinFPNBackbone(bb_config)
+# config = Mask2FormerConfig()
+# model = Mask2FormerPanopticSegmentation(config, backbone)
+# input = torch.randn(5,3,224,224)
+# op = model(input, output_hidden_states=True)
 
-print([f.shape for f in op['backbone_output'].feature_pyramid])
+# print([f.shape for f in op['backbone_output'].feature_pyramid])

@@ -1,9 +1,5 @@
-
-from typing import Dict, List, Optional, Tuple
-
+from typing import List
 from torch import Tensor, nn
-
-from vit_foundry.segmentation.config import Mask2FormerSinePositionEmbedding
 
 
 class FPNConvLayer(nn.Module):
@@ -91,8 +87,6 @@ class FeaturePyramidNetwork(nn.Module):
             *[FPNLayer(feature_size, lateral_width) for lateral_width in encoder_medial_widths[::-1]]
         )
         self.mask_projection = nn.Conv2d(feature_size, mask_feature_size, kernel_size=3, padding=1)
-        num_pos_feats = feature_size // 2
-        self.position_embedding = Mask2FormerSinePositionEmbedding(num_pos_feats=num_pos_feats, normalize=True)
 
     def forward(self, backbone_features):
         last_feature = backbone_features[-1]

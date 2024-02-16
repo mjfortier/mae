@@ -59,14 +59,14 @@ class SwinFPNBackbone(nn.Module):
         return Mask2FormerBackboneOutput(fpn_features[0], fpn_features[1], swin_features)
 
 
-checkpoint = '/home/matt/projects/core_research/upernet_swin_base_patch4_window7_512x512.pth'
-import numpy as np
-config = SwinFPNBackboneConfig(window_size=7)
-model = SwinFPNBackbone(config, checkpoint)
-model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-params = sum([np.prod(p.size()) for p in model_parameters])
-ip = torch.randn(1,3,512,512)
-op = model(ip)
-print([f.shape for f in op.encoder_features])
-print([f.shape for f in op.feature_pyramid])
-print(op.mask_features.shape)
+# checkpoint = '/home/matt/projects/core_research/upernet_swin_base_patch4_window7_512x512.pth'
+# import numpy as np
+# config = SwinFPNBackboneConfig(window_size=7)
+# model = SwinFPNBackbone(config, checkpoint)
+# model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+# params = sum([np.prod(p.size()) for p in model_parameters])
+# ip = torch.randn(1,3,512,512)
+# op = model(ip)
+# print([f.shape for f in op.encoder_features])
+# print([f.shape for f in op.feature_pyramid])
+# print(op.mask_features.shape)

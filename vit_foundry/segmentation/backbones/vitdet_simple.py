@@ -68,23 +68,23 @@ class ViTDetBackbone(nn.Module):
         
         return Mask2FormerBackboneOutput(pyramid[-1], pyramid[:-1], mae_output)
 
-"""
-Problems with this backbone:
-- Dropout to be explored
-- Currently can't load checkpoint
-"""
 
-import torch
-import numpy as np
+# Problems with this backbone:
+# - Dropout to be explored
+# - Currently can't load checkpoint
 
-config = ViTDetBackboneConfig(image_size=(512,512), window_size=16)
-model = ViTDetBackbone(config)
-model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-params = sum([np.prod(p.size()) for p in model_parameters])
-print(params)
-gsd = torch.randn(1)
-ip = torch.randn(1,3,512,512)
-op = model(ip, gsd)
-print([f.shape for f in op.encoder_features])
-print([f.shape for f in op.feature_pyramid])
-print(op.mask_features.shape)
+
+# import torch
+# import numpy as np
+
+# config = ViTDetBackboneConfig(image_size=(512,512), window_size=16)
+# model = ViTDetBackbone(config)
+# model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+# params = sum([np.prod(p.size()) for p in model_parameters])
+# print(params)
+# gsd = torch.randn(1)
+# ip = torch.randn(1,3,512,512)
+# op = model(ip, gsd)
+# print([f.shape for f in op.encoder_features])
+# print([f.shape for f in op.feature_pyramid])
+# print(op.mask_features.shape)

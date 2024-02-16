@@ -83,70 +83,16 @@ class GeospatialMAEDataset(Dataset):
         return (image, torch.tensor(meta['GSD']))
 
 
-class GeospatialMAEPositionalEmbeddings(nn.Module):
-    def __init__(self, image_size, patch_size, hidden_size):
-        super().__init__()
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.hidden_size = hidden_size
-        self.num_patches_y = self.image_size[0] // self.patch_size
-        self.num_patches_x = self.image_size[1] // self.patch_size
-        self.num_patches = self.num_patches_y * self.num_patches_x
-
-        self.position_embeddings_block_x = nn.Parameter(
-            torch.zeros(1, self.num_patches, self.hidden_size // 4), requires_grad=False
-        )
-        self.position_embeddings_block_y = nn.Parameter(
-            torch.zeros(1, self.num_patches, self.hidden_size // 4), requires_grad=False
-        )
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        assert self.hidden_size % 4 == 0, "embed_dim must be divisible by 4"
-        grid_h = np.arange(self.num_patches_y, dtype=float)
-
-        embed_dim = self.hidden_size // 4 # sin, cos, x, y
-        omega = np.arange(embed_dim, dtype=float) / embed_dim
-        omega = 1.0 / 10000**omega
-        block = np.einsum("m,d->md", grid_h, omega)
-        block_x = np.concatenate([block] * self.num_patches_x, axis=0)
-        block_y = np.repeat(block, self.num_patches_x, axis=0)
-
-        self.position_embeddings_block_x.data.copy_(torch.from_numpy(block_x).float().unsqueeze(0))
-        self.position_embeddings_block_y.data.copy_(torch.from_numpy(block_y).float().unsqueeze(0))
-
-
-    def forward(self, tokens, gsd):
-        '''
-        (in)  embeddings - (B,S,H)
-              gsd - (B)
-        (out) embeddings - (B,S,H)
-        '''
-        # Assumes no CLS token
-        B, _, _ = tokens.shape
-        emb_x = self.position_embeddings_block_x.repeat(B,1,1)
-        emb_y = self.position_embeddings_block_y.repeat(B,1,1)
-
-        gsd = gsd.unsqueeze(1).unsqueeze(2) # (B, 1, 1)
-
-        emb_sin_x = torch.sin(gsd * emb_x) # (B, S, H/4)
-        emb_cos_x = torch.cos(gsd * emb_x)
-        emb_sin_y = torch.sin(gsd * emb_y)
-        emb_cos_y = torch.cos(gsd * emb_y)
-        positional_embedding = torch.cat([emb_sin_x, emb_cos_x, emb_sin_y, emb_cos_y], dim=2)
-        return tokens + positional_embedding
-
-
 class GeospatialMAE(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.patch_embedding = vc.ViTMAEPatchEmbeddings(config)
-        self.enc_positional_embedding = GeospatialMAEPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
+        self.enc_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.hidden_size)
         self.random_masking = vc.ViTMAERandomMasking(config)
         self.encoder = vc.ViTMAEEncoder(config)
         self.enc_dec_projection = nn.Linear(config.hidden_size, config.decoder_hidden_size, bias=True)
-        self.dec_positional_embedding = GeospatialMAEPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
+        self.dec_positional_embedding = vc.ViTSinCosPositionalEmbeddings(config.image_size, config.patch_size, config.decoder_hidden_size)
         self.decoder = vc.ViTMAEDecoder(config)
         self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
         self.decoder_pred = nn.Linear(
