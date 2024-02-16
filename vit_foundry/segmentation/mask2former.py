@@ -44,8 +44,8 @@ class Mask2FormerModel(nn.Module):
 
 
     def forward(
-        self,
-        pixel_values: Tensor,
+            self,
+            pixel_values: Tensor,
     ):
         backbone_output = self.backbone(pixel_values)
 
@@ -78,12 +78,12 @@ class Mask2FormerPanopticSegmentation(nn.Module):
         #self.post_init()
 
     def get_loss_dict(
-        self,
-        intermediate_mask_predictions,
-        class_queries_logits,
-        mask_labels,
-        class_labels,
-        auxiliary_predictions: Dict[str, Tensor],
+            self,
+            intermediate_mask_predictions,
+            class_queries_logits,
+            mask_labels,
+            class_labels,
+            auxiliary_predictions: Dict[str, Tensor],
     ) -> Dict[str, Tensor]:
         loss_dict: Dict[str, Tensor] = self.criterion(
             intermediate_mask_predictions=intermediate_mask_predictions,

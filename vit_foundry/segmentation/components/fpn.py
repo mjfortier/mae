@@ -95,15 +95,16 @@ class FeaturePyramidNetwork(nn.Module):
         self.position_embedding = Mask2FormerSinePositionEmbedding(num_pos_feats=num_pos_feats, normalize=True)
 
     def forward(self, backbone_features):
-        fpn_features = []
         last_feature = backbone_features[-1]
         other_features = backbone_features[:-1]
         output = self.stem(last_feature)
+        fpn_features = [output]
         for layer, left in zip(self.layers, other_features[::-1]):
             output = layer(output, left)
-            fpn_features.append(self.position_embedding(output))
+            fpn_features.append(output)
 
-
+        # Separate out last feature and project to mask dimension
         last_feature_projected = self.mask_projection(fpn_features[-1])
+        fpn_features = fpn_features[:-1]
 
         return (last_feature_projected, tuple(fpn_features))

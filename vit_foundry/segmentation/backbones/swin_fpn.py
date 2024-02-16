@@ -10,12 +10,11 @@ from vit_foundry.segmentation.config import Mask2FormerBackboneOutput
 @dataclass
 class SwinFPNBackboneConfig():
     # Swin parameters
-    img_size: Tuple[int] = (224,224)
     window_size: int = 7                 # pixels per window edge
     backbone_embed_dim: int = 128        # hidden size per token. Note: this doubles every layer in Swin transformers.
-    depths: List[int] = (2, 2, 18)       # swin blocks per layer
-    num_heads: List[int] = (4, 8, 16)    # attention heads per layer
-    drop_path_rate: float = 0.2          # dropout of some kind I can't remember at time of writing
+    depths: List[int] = (2, 2, 18, 2)       # swin blocks per layer
+    num_heads: List[int] = (4, 8, 16, 32)    # attention heads per layer
+    drop_path_rate: float = 0.3          # dropout of some kind I can't remember at time of writing
 
     # FPN parameters
     fpn_hidden_size: int = 256           # all feature pyramid entries will have this size
@@ -28,12 +27,11 @@ class SwinFPNBackbone(nn.Module):
         self.config = config
         self.pyramid_depth = len(self.config.depths)
         self.swin = SwinTransformerV2(
-            img_size=config.img_size,
             window_size=config.window_size,
             embed_dim=config.backbone_embed_dim,
             depths=config.depths,
             num_heads=config.num_heads,
-            drop_path_rate=config.drop_path_rate,
+            drop_path_rate=config.drop_path_rate
         )
         self.fpn = FeaturePyramidNetwork(
             lateral_widths=self.swin.num_features,
@@ -42,12 +40,17 @@ class SwinFPNBackbone(nn.Module):
         )
 
         if checkpoint:
-            self.load_checkpoint(checkpoint, strict=False)
+            self.load_checkpoint(checkpoint)
 
 
     def load_checkpoint(self, checkpoint):
         state_dict = torch.load(checkpoint)
-        self.swin.load_state_dict(state_dict['model'])
+        renamed_state_dict = {}
+        for key in state_dict['state_dict'].keys():
+            if 'backbone' in key:
+                renamed = key.removeprefix('backbone.')
+                renamed_state_dict[renamed] = state_dict['state_dict'][key]
+        self.swin.load_state_dict(renamed_state_dict, strict=False)
 
 
     def forward(self, pixel_values: Tensor) -> Mask2FormerBackboneOutput:
@@ -55,18 +58,20 @@ class SwinFPNBackbone(nn.Module):
         fpn_features = self.fpn(swin_features)
         return Mask2FormerBackboneOutput(fpn_features[0], fpn_features[1], swin_features)
 
-"""
-Problems with this backbone:
-- My feature pyramid is H/16, H/8, H/4 but the Mask2Former paper claims H/32, H/16, H/8
-- Dropout to be explored
-- Initialization to be explored
-- Checkpoint loading is dicey; can silently fail
-"""
 
-
-checkpoint = '/home/matt/projects/core_research/swinv2_base_patch4_window12to24_192to384_22kto1k_ft.pth'
-
-config = SwinFPNBackboneConfig(img_size=(384,384), window_size=24)
+checkpoint = '/home/matt/projects/core_research/upernet_swin_base_patch4_window7_512x512.pth'
+import numpy as np
+config = SwinFPNBackboneConfig(window_size=7)
 model = SwinFPNBackbone(config, checkpoint)
+model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+params = sum([np.prod(p.size()) for p in model_parameters])
+print(params)
+ip = torch.randn(1,3,512,512)
+op = model(ip)
+print([f.shape for f in op.encoder_features])
+print([f.shape for f in op.feature_pyramid])
+print(op.mask_features.shape)
 
-
+print(model.swin.layers[3].downsample.norm.weight)
+print(model.swin.layers[3].downsample.norm.bias)
+print(model.swin.layers[3].downsample.reduction.weight)

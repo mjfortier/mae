@@ -66,22 +66,25 @@ class ViTDetBackbone(nn.Module):
         for layer in self.pyramid_layers:
             pyramid.append(layer(mae_output))
         
-        return Mask2FormerBackboneOutput(pyramid[-1], pyramid, mae_output)
+        return Mask2FormerBackboneOutput(pyramid[-1], pyramid[:-1], mae_output)
 
 """
 Problems with this backbone:
-- My feature pyramid is H/16, H/8, H/4 but the Mask2Former paper claims H/32, H/16, H/8, H/4 (4 feature maps?)
-- MAE needs modification to support windowed attention in most layers.
 - Dropout to be explored
 - Currently can't load checkpoint
 """
 
 import torch
+import numpy as np
 
 config = ViTDetBackboneConfig(image_size=(512,512), window_size=16)
 model = ViTDetBackbone(config)
-
-input = torch.randn(1,3,512,512)
+model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+params = sum([np.prod(p.size()) for p in model_parameters])
+print(params)
 gsd = torch.randn(1)
-
-op = model(input, gsd)
+ip = torch.randn(1,3,512,512)
+op = model(ip, gsd)
+print([f.shape for f in op.encoder_features])
+print([f.shape for f in op.feature_pyramid])
+print(op.mask_features.shape)
