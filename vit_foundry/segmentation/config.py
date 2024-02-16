@@ -24,12 +24,12 @@ class Mask2FormerConfig():
     mask_weight: float = 5.0
     dice_weight: float = 5.0
     train_num_points: int = 12544
+    use_auxiliary_loss: bool = True
 
     oversample_ratio: float = 3.0
     importance_sample_ratio: float = 0.75
     init_std: float = 0.02
     init_xavier_std: float = 1.0
-    use_auxiliary_loss: bool = True
     output_auxiliary_logits: bool = None
     r"""
     This is the configuration class to store the configuration of a [`Mask2FormerModel`]. It is used to instantiate a

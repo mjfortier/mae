@@ -7,18 +7,16 @@ from torch import Tensor, nn
 from config import Mask2FormerConfig
 from components.transformer_module import Mask2FormerTransformerModule
 from components.loss import Mask2FormerLoss
-
+from timm.models.layers import trunc_normal_
 
 
 class Mask2FormerModel(nn.Module):
-    def __init__(
-            self,
-            config: Mask2FormerConfig,
-            backbone: nn.Module,
-    ):
+    def __init__(self, config: Mask2FormerConfig, backbone: nn.Module):
         super().__init__()
         self.config = config
+
         self.backbone = backbone
+
         self.transformer_module = Mask2FormerTransformerModule(
             hidden_size=config.transformer_hidden_size,
             fpn_hidden_size=backbone.config.fpn_hidden_size,
@@ -27,43 +25,6 @@ class Mask2FormerModel(nn.Module):
             num_feature_levels=backbone.pyramid_depth,
             decoder_layers=config.num_layers,
             activation_fn=config.activation_function
-        )
-
-        self.initialize_weights()
-    
-    def initialize_weights(self): # Just a really naive weight initialization for now
-        for module in self.modules():
-
-            if isinstance(module, (nn.Linear, nn.Conv2d)):
-                module.weight.data.normal_(mean=0.0, std=0.02)
-                if module.bias is not None:
-                    module.bias.data.zero_()
-            elif isinstance(module, nn.LayerNorm) or isinstance(module, nn.GroupNorm):
-                module.bias.data.zero_()
-                module.weight.data.fill_(1.0)
-
-
-    def forward(
-            self,
-            pixel_values: Tensor,
-    ):
-        backbone_output = self.backbone(pixel_values)
-
-        transformer_module_output = self.transformer_module(
-            mask_features=backbone_output.mask_features,
-            feature_pyramid=backbone_output.feature_pyramid,
-        )
-
-        return (backbone_output, transformer_module_output)
-
-
-class Mask2FormerPanopticSegmentation(nn.Module):
-    def __init__(self, config: Mask2FormerConfig, backbone: nn.Module):
-        super().__init__()
-        self.config = config
-        self.model = Mask2FormerModel(
-            config,
-            backbone,
         )
 
         self.weight_dict: Dict[str, float] = {
@@ -75,42 +36,14 @@ class Mask2FormerPanopticSegmentation(nn.Module):
         self.class_predictor = nn.Linear(config.transformer_hidden_size, config.num_labels + 1)
 
         self.criterion = Mask2FormerLoss(config=config, weight_dict=self.weight_dict)
-        #self.post_init()
+        self._init_weights()
 
-    def get_loss_dict(
-            self,
-            intermediate_mask_predictions,
-            class_queries_logits,
-            mask_labels,
-            class_labels,
-            auxiliary_predictions: Dict[str, Tensor],
-    ) -> Dict[str, Tensor]:
-        loss_dict: Dict[str, Tensor] = self.criterion(
-            intermediate_mask_predictions=intermediate_mask_predictions,
-            class_queries_logits=class_queries_logits,
-            mask_labels=mask_labels,
-            class_labels=class_labels,
-            auxiliary_predictions=auxiliary_predictions,
-        )
 
-        # weight each loss by `self.weight_dict[<LOSS_NAME>]` including auxiliary losses
-        for key, weight in self.weight_dict.items():
-            for loss_key, loss in loss_dict.items():
-                if key in loss_key:
-                    loss *= weight
+    def _init_weights(self):
+        # Backbone and transformer_module weights are assumed to be initialized
+        trunc_normal_(self.class_predictor.weight, std=0.02)
+        nn.init.constant_(self.class_predictor.bias, 0)
 
-        return loss_dict
-
-    def get_loss(self, loss_dict: Dict[str, Tensor]) -> Tensor:
-        return sum(loss_dict.values())
-
-    def get_auxiliary_logits(self, classes: torch.Tensor, output_masks: torch.Tensor):
-        auxiliary_logits: List[Dict(str, Tensor)] = []
-
-        for aux_binary_masks, aux_classes in zip(output_masks[:-1], classes[:-1]):
-            auxiliary_logits.append({"intermediate_mask_predictions": aux_binary_masks, "class_queries_logits": aux_classes})
-
-        return auxiliary_logits
 
     def forward(
         self,
@@ -119,25 +52,34 @@ class Mask2FormerPanopticSegmentation(nn.Module):
         class_labels: Optional[List[Tensor]] = None,
         output_hidden_states: Optional[bool] = None,
     ):
-        backbone_output, transformer_module_output = self.model(pixel_values)
+        backbone_output = self.backbone(pixel_values)
+
+        transformer_module_output = self.transformer_module(
+            mask_features=backbone_output.mask_features,
+            feature_pyramid=backbone_output.feature_pyramid,
+        )
+
         mask_predictions = transformer_module_output.mask_predictions # note, this is from every layer of the transformer
-        
-        class_queries_logits = []
-        for decoder_output in transformer_module_output.hidden_states:
-            class_prediction = self.class_predictor(decoder_output)
-            class_queries_logits.append(class_prediction)
+        class_queries_logits = [self.class_predictor(hs) for hs in transformer_module_output.hidden_states]
 
         loss = None
         if mask_labels is not None and class_labels is not None:
-            auxiliary_logits = self.get_auxiliary_logits(class_queries_logits, mask_predictions)
-            loss_dict = self.get_loss_dict(
+            auxiliary_predictions = [(masks, logits) for masks, logits in zip(mask_predictions[:-1], class_queries_logits[:-1])]
+            loss_dict = self.criterion(
                 intermediate_mask_predictions=mask_predictions[-1], # final mask set prediction
                 class_queries_logits=class_queries_logits[-1], # final class set prediction
                 mask_labels=mask_labels,
                 class_labels=class_labels,
-                auxiliary_predictions=auxiliary_logits,
+                auxiliary_predictions=auxiliary_predictions if config.use_auxiliary_loss else None,
             )
-            loss = self.get_loss(loss_dict)
+            # weight each loss by `self.weight_dict[<LOSS_NAME>]` including auxiliary losses
+            # TODO: make sure this works w.r.t. iterator mutability
+            for key, weight in self.weight_dict.items():
+                for loss_key, loss in loss_dict.items():
+                    if key in loss_key:
+                        loss *= weight
+
+            loss = sum(loss_dict.values())
 
         output = {
             'loss': loss,
@@ -151,6 +93,9 @@ class Mask2FormerPanopticSegmentation(nn.Module):
             output['transformer_module_output'] = transformer_module_output
 
         return output
+
+
+
 
 from backbones.swin_fpn import SwinFPNBackbone, SwinFPNBackboneConfig
 bb_config = SwinFPNBackboneConfig()

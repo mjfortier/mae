@@ -471,17 +471,17 @@ class Mask2FormerLoss(nn.Module):
 
     def forward(
         self,
-        intermediate_mask_predictions: torch.Tensor,
+        mask_predictions: torch.Tensor,
         class_queries_logits: torch.Tensor,
         mask_labels: List[torch.Tensor],
         class_labels: List[torch.Tensor],
-        auxiliary_predictions: Optional[Dict[str, torch.Tensor]] = None,
+        auxiliary_predictions: Optional[List] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         This performs the loss computation.
 
         Args:
-            intermediate_mask_predictions (`torch.Tensor`):
+            mask_predictions (`torch.Tensor`):
                 A tensor of shape `(batch_size, num_queries, height, width)`.
             class_queries_logits (`torch.Tensor`):
                 A tensor of shape `(batch_size, num_queries, num_labels)`.
@@ -489,7 +489,7 @@ class Mask2FormerLoss(nn.Module):
                 List of mask labels of shape `(labels, height, width)`.
             class_labels (`List[torch.Tensor]`):
                 List of class labels of shape `(labels)`.
-            auxiliary_predictions (`Dict[str, torch.Tensor]`, *optional*):
+            auxiliary_predictions (`List[Tuple(torch.Tensor, torch.Tensor)]`, *optional*):
                 if `use_auxiliary_loss` was set to `true` in [`Mask2FormerConfig`], then it contains the logits from
                 the inner layers of the Mask2FormerMaskedAttentionDecoder.
 
@@ -505,20 +505,20 @@ class Mask2FormerLoss(nn.Module):
         """
 
         # retrieve the matching between the outputs of the last layer and the labels
-        indices = self.matcher(intermediate_mask_predictions, class_queries_logits, mask_labels, class_labels)
+        indices = self.matcher(mask_predictions, class_queries_logits, mask_labels, class_labels)
         # compute the average number of target masks for normalization purposes
         num_masks = self.get_num_masks(class_labels, device=class_labels[0].device)
         # get all the losses
         losses: Dict[str, Tensor] = {
-            **self.loss_masks(intermediate_mask_predictions, mask_labels, indices, num_masks),
+            **self.loss_masks(mask_predictions, mask_labels, indices, num_masks),
             **self.loss_labels(class_queries_logits, class_labels, indices),
         }
         # in case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if auxiliary_predictions is not None:
             for idx, aux_outputs in enumerate(auxiliary_predictions):
-                intermediate_mask_predictions = aux_outputs["intermediate_mask_predictions"]
-                class_queries_logits = aux_outputs["class_queries_logits"]
-                loss_dict = self.forward(intermediate_mask_predictions, class_queries_logits, mask_labels, class_labels)
+                mask_predictions = aux_outputs[0]
+                class_queries_logits = aux_outputs[1]
+                loss_dict = self.forward(mask_predictions, class_queries_logits, mask_labels, class_labels)
                 loss_dict = {f"{key}_{idx}": value for key, value in loss_dict.items()}
                 losses.update(loss_dict)
 
