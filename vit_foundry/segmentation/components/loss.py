@@ -210,7 +210,7 @@ class Mask2FormerHungarianMatcher(nn.Module):
         for i in range(batch_size):
             pred_probs = class_queries_logits[i].softmax(-1)
             pred_mask = intermediate_mask_predictions[i]
-
+            
             # Compute the classification cost. Contrary to the loss, we don't use the NLL, but approximate it in 1 - proba[target class]. The 1 is a constant that doesn't change the matching, it can be ommitted.
             cost_class = -pred_probs[:, class_labels[i]]
             target_mask = mask_labels[i].to(pred_mask)
