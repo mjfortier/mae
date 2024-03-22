@@ -431,10 +431,6 @@ class AttentionLayer(nn.Module):
             return (h, None)
 
 
-
-
-
-
 class ViTMAEAttentionBlock(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()

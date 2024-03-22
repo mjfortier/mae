@@ -8,7 +8,9 @@ from dataclasses import dataclass
 import pandas as pd
 from einops import rearrange
 import numpy as np
-from tqdm import tqdm
+from time import time
+import json
+import pickle as pkl
 torch.manual_seed(0)
 
 
@@ -16,7 +18,9 @@ torch.manual_seed(0)
 class PerceiverConfig():
     latent_hidden_dim: int = 256
     input_embedding_dim: int = 128
-    inputs: Tuple = ()
+    tabular_inputs: Tuple = ()
+    spectral_data_channels: int = 7
+    spectral_data_resolution: Tuple = ()
     mlp_ratio: int = 3
     num_frequencies: int = 12
     context_length: int = 64
@@ -39,14 +43,13 @@ class FourierFeatureMapping(nn.Module):
 
 
 class FluxDataset(Dataset):
-    def __init__(self, data_dir, sites, context_length=48, targets=['GPP_NT_VUT_REF'], device='cpu'):
+    def __init__(self, data_dir, sites, context_length=48, targets=['GPP_NT_VUT_REF']):
         self.data_dir = data_dir
         self.sites = sites
         self.data = []
         self.context_length = context_length
         self.targets = targets
         self.remove_columns = ['timestamp', 'NEE_VUT_REF', 'GPP_NT_VUT_REF', 'RECO_NT_VUT_REF']
-        self.device = device
         
         for root, _, files in os.walk(self.data_dir):
             in_sites = False
@@ -55,9 +58,12 @@ class FluxDataset(Dataset):
                     in_sites = True
             if not in_sites:
                 continue
+            
 
             if 'data.csv' in files:
                 df = pd.read_csv(os.path.join(root, 'data.csv'))
+                float_cols = [c for c in df.columns if c != 'timestamp']
+                df[float_cols] = df[float_cols].astype(np.float32)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 with open(os.path.join(root, 'modis.pkl'), 'rb') as f:
                     modis_data = pkl.load(f)
@@ -71,6 +77,10 @@ class FluxDataset(Dataset):
             _, df, _ = d
             for r in range(self.context_length, len(df)+1):
                 self.lookup_table.append((i,r))
+        
+        col_df = self.data[0][1].drop(columns=self.remove_columns)
+        self.tabular_columns = list(col_df.columns)
+        self.modis_bands = max([v.shape[0] for v in list(self.data[0][2].values())])
 
 
     def __len__(self):
@@ -82,37 +92,40 @@ class FluxDataset(Dataset):
 
         _, df, modis = self.data[site_num]
         rows = df.iloc[row_min:row_max]
+
         rows = rows.reset_index(drop=True)
         modis_data = []
         timestamps = list(rows['timestamp'])
         for i, ts in enumerate(timestamps):
             pixels = modis.get(ts, None)
             if pixels is not None:
-                modis_data.append((i, torch.tensor(pixels[:,1:9,1:9]).to(self.device)))
+                modis_data.append((i, torch.tensor(pixels[:,1:9,1:9], dtype=torch.float32)))
         
-        targets = torch.tensor(rows[self.targets].values).to(self.device)
+        targets = torch.tensor(rows[self.targets].values)
         row_values = torch.tensor(rows.drop(columns=self.remove_columns).values)
-        mask = row_values.isnan().to(self.device)
-        row_values = row_values.nan_to_num(-1.0).to(self.device) # just needs a numeric value, doesn't matter what
-
+        mask = row_values.isnan()
+        row_values = row_values.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
         return row_values, mask, modis_data, targets
 
 
 def custom_collate_fn(batch):
     row_values, mask, modis_data, targets = zip(*batch)
 
-    # imgs are tensors with the same dim, can be stacked
+    # Normal attributes
     row_values = torch.stack(row_values, dim=0)
     mask = torch.stack(mask, dim=0)
     targets = torch.stack(targets, dim=0)
 
-    # masks and classes have variable size per sample, so they get returned as a list
-    modis_data = [m for m in modis_data]
+    # List of modis data. Tuples of (batch, timestep, data)
+    modis_list = []
+    for b, batch in enumerate(modis_data):
+        for t, data in batch:
+            modis_list.append((b, t, data))
 
-    return row_values, mask, modis_data, targets
+    return row_values, mask, modis_list, targets
 
-def FluxDataLoader(data_dir, sites, context_length = 48, targets=['GPP_NT_VUT_REF'], device='cpu', **kwargs):
-    ds = FluxDataset(data_dir, sites, context_length=context_length, targets=targets, device=device)
+def FluxDataLoader(data_dir, sites, context_length = 48, targets=['GPP_NT_VUT_REF'], **kwargs):
+    ds = FluxDataset(data_dir, sites, context_length=context_length, targets=targets)
     return DataLoader(ds, collate_fn=custom_collate_fn, **kwargs)
 
 
@@ -120,13 +133,19 @@ class Perceiver(nn.Module):
     def __init__(self, config: PerceiverConfig):
         super().__init__()
         self.config = config
-        self.inputs = config.inputs
-        self.input_embeddings = nn.Embedding(len(self.inputs), self.config.input_embedding_dim)
+        self.input_embeddings = nn.Embedding(len(self.config.tabular_inputs), self.config.input_embedding_dim)
         self.fourier = FourierFeatureMapping(self.config.num_frequencies)
         self.input_hidden_dim = self.config.input_embedding_dim + self.config.num_frequencies * 2
 
         latent_hidden_dim = self.config.latent_hidden_dim
         self.latent_embeddings = nn.Embedding(self.config.context_length, latent_hidden_dim)
+
+        num_pixels = self.config.spectral_data_resolution[0] * self.config.spectral_data_resolution[1]
+        self.channels = self.config.spectral_data_channels # for brevity
+        self.spectral_projections = nn.ModuleList(
+            [nn.Linear(num_pixels, self.config.num_frequencies * 2) for _ in range(self.channels)]
+        )
+        self.spectral_embeddings = nn.Embedding(self.channels, self.config.input_embedding_dim)
 
         self.layer_types = self.config.layers
         layers = []
@@ -141,32 +160,57 @@ class Perceiver(nn.Module):
                 )
 
         self.layers = nn.ModuleList(layers)
-        self.cross_attn = vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
-        self.self_attn = vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
-
         self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
+    
+    def process_spectral_data(self, spectral_data, device, B, L):
+        img_data = torch.stack([img.flatten(1).to(device) for _, _, img in spectral_data]) # (num_images, num_bands, num_pixels)
+        img_map = [b*L + t for b, t, _ in spectral_data]
+        
+        img_data = img_data.transpose(0,1) # (C, num_images, num_pixels)
+        img_data_proj = torch.zeros((self.channels, img_data.shape[1], self.config.num_frequencies * 2), device=device)
+        for i, proj in enumerate(self.spectral_projections):
+            img_data_proj[i] = proj(img_data[i])
+        # add embeddings
+        img_data = img_data_proj.transpose(0,1) # (num_images, C, 2*F)
+        spec_embeddings = self.spectral_embeddings.weight.unsqueeze(0).repeat(len(img_map), 1, 1) # (num_images, C, I)
+        img_data = torch.cat([img_data, spec_embeddings], dim=-1)  # (num_images, C, IH)
 
-        self.initialize_weights()
+        img_mask = torch.ones((B*L, 1, self.channels), device=device) # (B*L, 1, C)
+        full_image_data = torch.zeros((B*L, self.channels, self.input_hidden_dim), device=device) # (B*L, C, IH)
+        for i, idx in enumerate(img_map):
+            img_mask[idx] = 0.0
+            full_image_data[idx] = img_data[i]
+        
+        return full_image_data, img_mask
 
-    def initialize_weights(self):
-        pass
-
-    def forward(self, observations, fluxes, masks):
+    def forward(self, observations, masks, spectral_data, fluxes):
         '''
         B - batch size
         L - sequence length
         P - # of observations (input variables)
-        F - # of frequencies 
+        F - # of frequencies
+        C - # of spectral channels
         I - input embedding dim
         IH - total input dim (I + 2*F)
         H - latent hidden dim
         '''
+        device = self.input_embeddings.weight.device
+        observations = observations.to(device)
+        masks = masks.to(device)
+        fluxes = fluxes.to(device)
+
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
         embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
         combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
         combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
-        masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1)
+        masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
+
+        # images
+        img_data, img_mask = self.process_spectral_data(spectral_data, device, B, L)
+        
+        masks = torch.cat([masks, img_mask], dim=-1) # (B*L, 1, P+C)
+        combined_obs = torch.cat([combined_obs, img_data], dim=1) # (B*L, P+C, IH)
 
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
 
@@ -176,11 +220,10 @@ class Perceiver(nn.Module):
                 hidden, _ = layer(hidden, combined_obs, mask=masks)
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
             elif type == 'self':
-                hidden, _ = self.self_attn(hidden, hidden)
-
-        op = self.output_proj(hidden)[:,0].squeeze()
+                hidden, _ = layer(hidden, hidden)
+        op = self.output_proj(hidden[:,-1,:])
         return {
-            'loss': self.loss(fluxes, op),
+            'loss': self.loss(fluxes[:,-1], op),
             'logits': op,
         }
     
