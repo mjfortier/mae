@@ -26,6 +26,7 @@ class PerceiverConfig():
     context_length: int = 64
     num_heads: int = 8
     layers: Tuple = ('cross', 'self', 'cross', 'self', 'cross', 'self', 'self', 'self')
+    targets: Tuple = ('GPP_NT_VUT_REF')
 
 
 class FourierFeatureMapping(nn.Module):
