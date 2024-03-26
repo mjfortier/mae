@@ -25,7 +25,7 @@ class PerceiverConfig():
     num_frequencies: int = 12
     context_length: int = 64
     num_heads: int = 8
-    layers: Tuple = ()
+    layers: Tuple = ('cross', 'self', 'cross', 'self', 'cross', 'self', 'self', 'self')
 
 
 class FourierFeatureMapping(nn.Module):
