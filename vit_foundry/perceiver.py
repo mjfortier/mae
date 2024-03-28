@@ -162,6 +162,7 @@ class Perceiver(nn.Module):
 
         self.layers = nn.ModuleList(layers)
         self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
+        self.apply(self.initialize_weights)
     
     def process_spectral_data(self, spectral_data, device, B, L):
         img_data = torch.stack([img.flatten(1).to(device) for _, _, img in spectral_data]) # (num_images, num_bands, num_pixels)
@@ -227,6 +228,15 @@ class Perceiver(nn.Module):
             'loss': self.loss(fluxes[:,-1], op),
             'logits': op,
         }
+    
+    def initialize_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_normal_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm)):
+            nn.init.constant_(module.weight, 1)
+            nn.init.constant_(module.bias, 0)
     
     def loss(self, pred, target):
         loss = (pred - target) ** 2
