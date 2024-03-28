@@ -20,7 +20,7 @@ class PerceiverConfig():
     input_embedding_dim: int = 128
     tabular_inputs: Tuple = ()
     spectral_data_channels: int = 7
-    spectral_data_resolution: Tuple = ()
+    spectral_data_resolution: Tuple = (8,8)
     mlp_ratio: int = 3
     num_frequencies: int = 12
     context_length: int = 64

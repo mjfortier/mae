@@ -416,7 +416,7 @@ class AttentionLayer(nn.Module):
         
         residual = q_states
         h = self.layernorm_1(q_states)
-        h, att = self.attention(q_states, kv_states, mask=mask)
+        h, att = self.attention(h, kv_states, mask=mask)
         h = h + residual
 
         residual = h
