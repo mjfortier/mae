@@ -147,6 +147,8 @@ class Perceiver(nn.Module):
             [nn.Linear(num_pixels, self.config.num_frequencies * 2) for _ in range(self.channels)]
         )
         self.spectral_embeddings = nn.Embedding(self.channels, self.config.input_embedding_dim)
+        self.layer_norm_ec = nn.LayerNorm(self.input_hidden_dim, eps=1e-12)
+        self.layer_norm_eo = nn.LayerNorm(self.input_hidden_dim, eps=1e-12)
 
         self.layer_types = self.config.layers
         layers = []
@@ -221,6 +223,9 @@ class Perceiver(nn.Module):
         masks_without_image = masks[~img_map]
         obs_without_image = combined_obs[~img_map]
 
+        obs_with_image = self.layer_norm_eo(obs_with_image)
+        obs_without_image = self.layer_norm_ec(obs_without_image)
+
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
 
         for type, layer in zip(self.layer_types, self.layers):
@@ -255,7 +260,6 @@ class Perceiver(nn.Module):
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean()
-
 
 
 
