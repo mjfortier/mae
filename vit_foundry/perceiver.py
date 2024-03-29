@@ -164,32 +164,36 @@ class Perceiver(nn.Module):
         self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
         self.apply(self.initialize_weights)
     
-    def process_spectral_data(self, spectral_data, device, B, L):
-        img_data = torch.stack([img.flatten(1).to(device) for _, _, img in spectral_data]) # (num_images, num_bands, num_pixels)
-        img_map = [b*L + t for b, t, _ in spectral_data]
+    def process_spectral_inputs(self, spectral_data, B, L):
+        device = self.input_embeddings.weight.device
         
-        img_data = img_data.transpose(0,1) # (C, num_images, num_pixels)
+        imgs = []
+        indices = []
+        for b, t, img in spectral_data:
+            imgs.append(img.flatten(1).to(device))
+            indices.append(b*L + t)
+        img_data = torch.stack(imgs) # (M, C, num_pixels)
+        img_map = torch.zeros(B*L, device=device, dtype=torch.bool)
+        img_map[indices] = True
+        
+        img_data = img_data.transpose(0,1) # (C, M, num_pixels)
         img_data_proj = torch.zeros((self.channels, img_data.shape[1], self.config.num_frequencies * 2), device=device)
         for i, proj in enumerate(self.spectral_projections):
             img_data_proj[i] = proj(img_data[i])
-        # add embeddings
-        img_data = img_data_proj.transpose(0,1) # (num_images, C, 2*F)
-        spec_embeddings = self.spectral_embeddings.weight.unsqueeze(0).repeat(len(img_map), 1, 1) # (num_images, C, I)
-        img_data = torch.cat([img_data, spec_embeddings], dim=-1)  # (num_images, C, IH)
-
-        img_mask = torch.ones((B*L, 1, self.channels), device=device) # (B*L, 1, C)
-        full_image_data = torch.zeros((B*L, self.channels, self.input_hidden_dim), device=device) # (B*L, C, IH)
-        for i, idx in enumerate(img_map):
-            img_mask[idx] = 0.0
-            full_image_data[idx] = img_data[i]
         
-        return full_image_data, img_mask
+        # add embeddings
+        img_data = img_data_proj.transpose(0,1) # (M, C, 2*F)
+        spec_embeddings = self.spectral_embeddings.weight.unsqueeze(0).repeat(len(spectral_data), 1, 1) # (M, C, I)
+        img_data = torch.cat([img_data, spec_embeddings], dim=-1)  # (M, C, IH)
+        
+        return img_data, img_map
 
     def forward(self, observations, masks, spectral_data, fluxes):
         '''
         B - batch size
         L - sequence length
         P - # of observations (input variables)
+        M - # of observations with images
         F - # of frequencies
         C - # of spectral channels
         I - input embedding dim
@@ -209,17 +213,27 @@ class Perceiver(nn.Module):
         masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
 
         # images
-        img_data, img_mask = self.process_spectral_data(spectral_data, device, B, L)
-        
-        masks = torch.cat([masks, img_mask], dim=-1) # (B*L, 1, P+C)
-        combined_obs = torch.cat([combined_obs, img_data], dim=1) # (B*L, P+C, IH)
+        img_data, img_map = self.process_spectral_inputs(spectral_data, B, L)
+
+        # divide obs
+        masks_with_image = torch.cat([masks[img_map], torch.zeros((len(spectral_data), 1, self.channels), dtype=bool, device=device)], dim=-1) # (M, 1, P+C)
+        obs_with_image = torch.cat([combined_obs[img_map], img_data], dim=1)
+        masks_without_image = masks[~img_map]
+        obs_without_image = combined_obs[~img_map]
 
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
 
         for type, layer in zip(self.layer_types, self.layers):
             if type == 'cross':
                 hidden = rearrange(hidden, 'B L H -> (B L) H').unsqueeze(1) # (B*L, 1, H)
-                hidden, _ = layer(hidden, combined_obs, mask=masks)
+                hidden_with_image = hidden[img_map]
+                hidden_without_image = hidden[~img_map]
+
+                hidden_with_image, _ = layer(hidden_with_image, obs_with_image, mask=masks_with_image)
+                hidden_without_image, _ = layer(hidden_without_image, obs_without_image, mask=masks_without_image)
+
+                hidden[img_map] = hidden_with_image
+                hidden[~img_map] = hidden_without_image
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
             elif type == 'self':
                 hidden, _ = layer(hidden, hidden)
@@ -241,7 +255,6 @@ class Perceiver(nn.Module):
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean()
-
 
 
 
