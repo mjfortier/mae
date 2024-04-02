@@ -27,6 +27,7 @@ class PerceiverConfig():
     num_heads: int = 8
     layers: Tuple = ('cross', 'self', 'cross', 'self', 'cross', 'self', 'self', 'self')
     targets: Tuple = ('GPP_NT_VUT_REF')
+    causal: bool = True
 
 
 class FourierFeatureMapping(nn.Module):
@@ -164,7 +165,22 @@ class Perceiver(nn.Module):
 
         self.layers = nn.ModuleList(layers)
         self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
+        self.causal_mask = nn.Parameter(torch.zeros((1, self.config.context_length, self.config.context_length), dtype=torch.bool), requires_grad=False)
+        if self.config.causal:
+            for y in range(self.config.context_length):
+                for x in range(self.config.context_length):
+                    self.causal_mask[:,y,x] = y < x
+        
         self.apply(self.initialize_weights)
+    
+    def initialize_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_normal_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm)):
+            nn.init.constant_(module.weight, 1)
+            nn.init.constant_(module.bias, 0)
     
     def process_spectral_inputs(self, spectral_data, B, L):
         device = self.input_embeddings.weight.device
@@ -241,27 +257,16 @@ class Perceiver(nn.Module):
                 hidden[~img_map] = hidden_without_image
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
             elif type == 'self':
-                hidden, _ = layer(hidden, hidden)
+                hidden, _ = layer(hidden, hidden, mask=self.causal_mask)
         op = self.output_proj(hidden[:,-1,:])
         return {
             'loss': self.loss(fluxes[:,-1], op),
             'logits': op,
         }
     
-    def initialize_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
-        elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm)):
-            nn.init.constant_(module.weight, 1)
-            nn.init.constant_(module.bias, 0)
-    
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean()
-
-
 
 
 

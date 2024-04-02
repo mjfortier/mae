@@ -340,6 +340,7 @@ class MultiheadAttentionBlock(nn.Module):
         hidden_states - (B, L, H)
         cross_attention_states - (B, Lc, Hc)
         mask: (B, L, Lc)
+            - where mask is True, attention score will be set to '-inf'
         '''
         
         query_layer = self.transpose_for_scores(self.query(q_states)) # (B, num_heads, L, head_size)
@@ -350,7 +351,8 @@ class MultiheadAttentionBlock(nn.Module):
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
         if mask is not None:
-            attention_scores = attention_scores * mask.unsqueeze(1)
+            mask = mask.unsqueeze(1)
+            attention_scores = attention_scores.where(~mask, float('-inf'))
         attention_probs = self.attention_dropout(attention_scores) # NOTE: This was in the original paper, but it drops entire tokens so we could try removing it
         
         attention_probs = nn.functional.softmax(attention_scores, dim=-1)
