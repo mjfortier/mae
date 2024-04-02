@@ -25,7 +25,7 @@ class PerceiverConfig():
     num_frequencies: int = 12
     context_length: int = 64
     num_heads: int = 8
-    layers: Tuple = ('cross', 'self', 'cross', 'self', 'cross', 'self', 'self', 'self')
+    layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
     targets: Tuple = ('GPP_NT_VUT_REF')
     causal: bool = True
 
@@ -154,11 +154,11 @@ class Perceiver(nn.Module):
         self.layer_types = self.config.layers
         layers = []
         for l in self.layer_types:
-            if l == 'cross':
+            if l == 'c':
                 layers.append(
                     vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
                 )
-            elif l == 'self':
+            elif l == 's':
                 layers.append(
                     vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
                 )
@@ -244,20 +244,20 @@ class Perceiver(nn.Module):
 
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
 
-        for type, layer in zip(self.layer_types, self.layers):
-            if type == 'cross':
+        for i, layer_type in enumerate(self.layer_types):
+            if layer_type == 'c':
                 hidden = rearrange(hidden, 'B L H -> (B L) H').unsqueeze(1) # (B*L, 1, H)
                 hidden_with_image = hidden[img_map]
                 hidden_without_image = hidden[~img_map]
 
-                hidden_with_image, _ = layer(hidden_with_image, obs_with_image, mask=masks_with_image)
-                hidden_without_image, _ = layer(hidden_without_image, obs_without_image, mask=masks_without_image)
+                hidden_with_image, _ = self.layers[i](hidden_with_image, obs_with_image, mask=masks_with_image)
+                hidden_without_image, _ = self.layers[i](hidden_without_image, obs_without_image, mask=masks_without_image)
 
                 hidden[img_map] = hidden_with_image
                 hidden[~img_map] = hidden_without_image
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
-            elif type == 'self':
-                hidden, _ = layer(hidden, hidden, mask=self.causal_mask)
+            elif layer_type == 's':
+                hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
         op = self.output_proj(hidden[:,-1,:])
         return {
             'loss': self.loss(fluxes[:,-1], op),
