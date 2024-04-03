@@ -84,6 +84,9 @@ class FluxDataset(Dataset):
         self.tabular_columns = list(col_df.columns)
         self.modis_bands = max([v.shape[0] for v in list(self.data[0][2].values())])
 
+    def num_channels(self):
+        _, _, modis = self.data[0]
+        return modis[list(modis.keys())[0]].shape[0]
 
     def __len__(self):
         return len(self.lookup_table)
