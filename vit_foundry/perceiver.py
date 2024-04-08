@@ -268,10 +268,10 @@ class Perceiver(nn.Module):
         
         op = self.output_proj(hidden).squeeze()
         all_loss = self.loss(fluxes.squeeze(), op)
-        loss = all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum()
         
         return {
-            'loss': loss,
+            'loss': all_loss[-1],
+            'aux_loss': all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum(),
             'logits': op,
         }
     
@@ -314,10 +314,10 @@ class Perceiver(nn.Module):
         
         op = self.output_proj(hidden).squeeze()
         all_loss = self.loss(fluxes.squeeze(), op)
-        loss = all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum()
         
         return {
-            'loss': loss,
+            'loss': all_loss[-1],
+            'aux_loss': all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum(),
             'logits': op,
         }
     
