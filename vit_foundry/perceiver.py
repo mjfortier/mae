@@ -1,6 +1,6 @@
 import os
 import torch
-from typing import List, Tuple
+from typing import Tuple
 from torch import nn
 import vit_foundry.vit_components as vc
 from torch.utils.data import Dataset, DataLoader
@@ -26,6 +26,7 @@ class PerceiverConfig():
     context_length: int = 64
     num_heads: int = 8
     auxilliary_loss: int = 0
+    obs_dropout: float = 0.0
     layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
     targets: Tuple = ('GPP_NT_VUT_REF')
     causal: bool = True
@@ -142,6 +143,7 @@ class Perceiver(nn.Module):
         self.input_embeddings = nn.Embedding(len(self.config.tabular_inputs), self.config.input_embedding_dim)
         self.fourier = FourierFeatureMapping(self.config.num_frequencies)
         self.input_hidden_dim = self.config.input_embedding_dim + self.config.num_frequencies * 2
+        self.obs_dropout = nn.Dropout(p=self.config.obs_dropout)
 
         latent_hidden_dim = self.config.latent_hidden_dim
         self.latent_embeddings = nn.Embedding(self.config.context_length, latent_hidden_dim)
@@ -222,13 +224,15 @@ class Perceiver(nn.Module):
         IH - total input dim (I + 2*F)
         H - latent hidden dim
         '''
+        device = self.input_embeddings.weight.device
+        masks = masks.to(device)
+        dropout_mask = ~self.obs_dropout(torch.ones(masks.shape, device=device)).to(torch.bool)
+        masks = masks | dropout_mask
+        observations = observations.to(device)
+        fluxes = fluxes.to(device)
+
         if len(spectral_data) == 0:
             return self.forward_no_images(observations, masks, fluxes)
-        
-        device = self.input_embeddings.weight.device
-        observations = observations.to(device)
-        masks = masks.to(device)
-        fluxes = fluxes.to(device)
 
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
@@ -287,11 +291,6 @@ class Perceiver(nn.Module):
         IH - total input dim (I + 2*F)
         H - latent hidden dim
         '''
-        device = self.input_embeddings.weight.device
-        observations = observations.to(device)
-        masks = masks.to(device)
-        fluxes = fluxes.to(device)
-
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
         embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
@@ -324,96 +323,3 @@ class Perceiver(nn.Module):
     def loss(self, pred, target):
         loss = (pred - target) ** 2
         return loss.mean(dim=0)
-
-
-
-### Old code
-
-# class PerceiverDataset(Dataset):
-#     def __init__(self, met_csv, flux_csv, context_window_length, target='NEE'):
-#         self.target = target
-#         self.met = pd.read_csv(met_csv, index_col=False).astype(np.float32)
-#         self.flux = pd.read_csv(flux_csv, index_col=False).astype(np.float32)
-#         self.flux = self.flux[self.flux[target].notna()]
-#         self.context = context_window_length
-
-#     def __len__(self):
-#         return len(self.flux) - self.context
-    
-#     def get_columns(self):
-#         return list(self.met.drop('year', axis=1).columns)
-
-#     def __getitem__(self, idx):
-#         flux_row = self.flux.iloc[idx]
-#         year = flux_row['year']
-#         doy = flux_row['doy']
-#         minutes = flux_row['minutes']
-#         row_condition = (self.met['year'] == year) & (self.met['doy'] == doy) & (self.met['minutes'] == minutes)
-
-#         met_row_id = self.met[row_condition].index[0]
-
-#         start, end = max(met_row_id - self.context + 1, 0), met_row_id + 1
-#         met_rows = self.met.iloc[start:end]
-#         flux_row = flux_row.drop('year')
-#         met_rows = met_rows.drop('year', axis=1)
-        
-#         # Padding for lack of observations
-#         met = torch.tensor(met_rows.values)
-#         flux = torch.tensor(flux_row[self.target])
-        
-#         steps, obs = met.shape
-#         row_deficit = self.context - steps
-#         if row_deficit > 0:
-#             padding = torch.empty((row_deficit, obs), dtype=met.dtype)
-#             padding[:,:] = float('nan')
-#             met = torch.cat((padding, met), 0)
-
-#         return met, flux, met.isnan()
-
-
-
-
-
-# context_length = 48
-
-# dataset = PerceiverDataset('scotty_creek_met_processed.csv', 'scotty_creek_flux_processed.csv', context_length)
-# dl = DataLoader(dataset, batch_size=16, shuffle=True)
-
-# config = PerceiverConfig(
-#     inputs=dataset.get_columns(),
-#     context_length=context_length,
-#     num_frequencies=12,
-#     input_embedding_dim=8,
-#     latent_hidden_dim=128,
-#     num_heads=8,
-#     layers = ('cross', 'self', 'cross', 'self', 'cross', 'self', 'self', 'self')
-# )
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-# model = Perceiver(config)
-# model.to(device)
-# optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
-
-# def train_one_epoch(model, dataloader, optimizer):
-#     total_loss = 0.0
-#     for met, flux, mask in tqdm(dataloader):
-#         try:
-#             met = met.nan_to_num(-9999.0).to(device)
-#             flux = flux.to(device)
-#             mask = mask.to(device)
-
-#             op = model(met, flux, mask)
-
-#             loss = op['loss']
-#             total_loss += loss.item()
-
-#             optimizer.zero_grad()
-#             loss.backward()
-#             optimizer.step()
-#         except Exception as e:
-#             print(flux)
-#     return total_loss / len(dataloader)
-
-# for x in range(5):
-#     loss = train_one_epoch(model, dl, optimizer)
-#     print(loss)
-
