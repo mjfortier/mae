@@ -25,7 +25,7 @@ class PerceiverConfig():
     num_frequencies: int = 12
     context_length: int = 64
     num_heads: int = 8
-    auxilliary_loss: bool = False
+    auxilliary_loss: int = 0
     layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
     targets: Tuple = ('GPP_NT_VUT_REF')
     causal: bool = True
@@ -222,6 +222,9 @@ class Perceiver(nn.Module):
         IH - total input dim (I + 2*F)
         H - latent hidden dim
         '''
+        if len(spectral_data) == 0:
+            return self.forward_no_images(observations, masks, fluxes)
+        
         device = self.input_embeddings.weight.device
         observations = observations.to(device)
         masks = masks.to(device)
@@ -262,15 +265,65 @@ class Perceiver(nn.Module):
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
             elif layer_type == 's':
                 hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
-        op = self.output_proj(hidden[:,-1,:])
+        
+        op = self.output_proj(hidden).squeeze()
+        all_loss = self.loss(fluxes.squeeze(), op)
+        loss = all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum()
+        
         return {
-            'loss': self.loss(fluxes[:,-1], op),
+            'loss': loss,
+            'logits': op,
+        }
+    
+    def forward_no_images(self, observations, masks, fluxes):
+        '''
+        B - batch size
+        L - sequence length
+        P - # of observations (input variables)
+        M - # of observations with images
+        F - # of frequencies
+        C - # of spectral channels
+        I - input embedding dim
+        IH - total input dim (I + 2*F)
+        H - latent hidden dim
+        '''
+        device = self.input_embeddings.weight.device
+        observations = observations.to(device)
+        masks = masks.to(device)
+        fluxes = fluxes.to(device)
+
+        B, L, P = observations.shape
+        fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
+        embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
+        combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
+        combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
+        masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
+
+
+        combined_obs = self.layer_norm_ec(combined_obs)
+        hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
+
+        for i, layer_type in enumerate(self.layer_types):
+            if layer_type == 'c':
+                hidden = rearrange(hidden, 'B L H -> (B L) H').unsqueeze(1) # (B*L, 1, H)
+
+                hidden, _ = self.layers[i](hidden, combined_obs, mask=masks)
+                hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
+            elif layer_type == 's':
+                hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
+        
+        op = self.output_proj(hidden).squeeze()
+        all_loss = self.loss(fluxes.squeeze(), op)
+        loss = all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum()
+        
+        return {
+            'loss': loss,
             'logits': op,
         }
     
     def loss(self, pred, target):
         loss = (pred - target) ** 2
-        return loss.mean()
+        return loss.mean(dim=0)
 
 
 
