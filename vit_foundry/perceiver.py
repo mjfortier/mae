@@ -25,7 +25,7 @@ class PerceiverConfig():
     num_frequencies: int = 12
     context_length: int = 64
     num_heads: int = 8
-    auxilliary_loss: int = 0
+    auxilliary_loss: float = 0.0
     obs_dropout: float = 0.0
     layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
     targets: Tuple = ('GPP_NT_VUT_REF')
