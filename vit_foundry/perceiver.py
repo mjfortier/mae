@@ -21,6 +21,7 @@ class PerceiverConfig():
     tabular_inputs: Tuple = ()
     spectral_data_channels: int = 7
     spectral_data_resolution: Tuple = (8,8)
+    weight_sharing: bool = False
     mlp_ratio: int = 3
     num_frequencies: int = 12
     context_length: int = 64
@@ -159,15 +160,31 @@ class Perceiver(nn.Module):
 
         self.layer_types = self.config.layers
         layers = []
-        for l in self.layer_types:
-            if l == 'c':
-                layers.append(
-                    vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
-                )
-            elif l == 's':
-                layers.append(
-                    vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
-                )
+        if self.config.weight_sharing:
+            cross_attention_block = [
+                vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim),
+                vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
+            ]
+            for i in range(len(self.layer_types)//2):
+                block_type = self.layer_types[i*2:(i+1)*2]
+                if block_type == 'cs':
+                    layers.extend(cross_attention_block)
+                else:
+                    layers.extend([
+                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio),
+                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
+                    ])
+            
+        else:
+            for l in self.layer_types:
+                if l == 'c':
+                    layers.append(
+                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
+                    )
+                elif l == 's':
+                    layers.append(
+                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
+                    )
 
         self.layers = nn.ModuleList(layers)
         self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
