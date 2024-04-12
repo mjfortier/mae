@@ -243,8 +243,9 @@ class Perceiver(nn.Module):
         '''
         device = self.input_embeddings.weight.device
         masks = masks.to(device)
-        dropout_mask = ~self.obs_dropout(torch.ones(masks.shape, device=device)).to(torch.bool)
-        masks = masks | dropout_mask
+        if self.training:
+            dropout_mask = ~self.obs_dropout(torch.ones(masks.shape, device=device)).to(torch.bool)
+            masks = masks | dropout_mask
         masks[:,:,-2:] = False # never mask ToD or DoY. This also ensures no NaNs in attention block.
         observations = observations.to(device)
         fluxes = fluxes.to(device)
