@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import pandas as pd
 from einops import rearrange
 import numpy as np
-from time import time
 import json
 import pickle as pkl
 torch.manual_seed(0)
@@ -26,7 +25,6 @@ class PerceiverConfig():
     num_frequencies: int = 12
     context_length: int = 64
     num_heads: int = 8
-    auxilliary_loss: float = 0.0
     obs_dropout: float = 0.0
     layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
     targets: Tuple = ('GPP_NT_VUT_REF')
@@ -48,13 +46,21 @@ class FourierFeatureMapping(nn.Module):
 
 
 class FluxDataset(Dataset):
-    def __init__(self, data_dir, sites, context_length=48, targets=['GPP_NT_VUT_REF']):
+    def __init__(
+            self, data_dir, sites, time_series=False, context_length=48,
+            target_columns=['NEE_VUT_REF'],
+            time_columns=['DOY', 'TOD'],
+            remove_columns=['timestamp', 'NEE_VUT_REF', 'GPP_NT_VUT_REF', 'RECO_NT_VUT_REF'], # to be removed by default from predictors
+            ):
         self.data_dir = data_dir
         self.sites = sites
         self.data = []
+        self.time_series = time_series
         self.context_length = context_length
-        self.targets = targets
-        self.remove_columns = ['timestamp', 'NEE_VUT_REF', 'GPP_NT_VUT_REF', 'RECO_NT_VUT_REF']
+
+        self.target_columns = target_columns
+        self.time_columns = time_columns
+        self.remove_columns = remove_columns
         
         for root, _, files in os.walk(self.data_dir):
             in_sites = False
@@ -63,10 +69,10 @@ class FluxDataset(Dataset):
                     in_sites = True
             if not in_sites:
                 continue
-            
 
             if 'data.csv' in files:
                 df = pd.read_csv(os.path.join(root, 'data.csv'))
+
                 float_cols = [c for c in df.columns if c != 'timestamp']
                 df[float_cols] = df[float_cols].astype(np.float32)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -84,12 +90,22 @@ class FluxDataset(Dataset):
                 self.lookup_table.append((i,r))
         
         col_df = self.data[0][1].drop(columns=self.remove_columns)
-        self.tabular_columns = list(col_df.columns)
+        
+        self.tabular_columns = list(col_df.columns) + self.target_columns # total list for model config purposes
         self.modis_bands = max([v.shape[0] for v in list(self.data[0][2].values())])
 
     def num_channels(self):
+        # returns number of frequency bands in the imagery
         _, _, modis = self.data[0]
         return modis[list(modis.keys())[0]].shape[0]
+    
+    def add_masked_targets(self, predictor_df, target_df):
+        # Add targets to predictors, but only a random number of them to simulate cold starts
+        n = np.random.randint(0, len(predictor_df))
+        target_df[-1:] = np.nan
+        target_df[:n] = np.nan
+        predictor_df = pd.concat([predictor_df, target_df], axis=1)
+        return predictor_df
 
     def __len__(self):
         return len(self.lookup_table)
@@ -109,31 +125,49 @@ class FluxDataset(Dataset):
             if pixels is not None:
                 modis_data.append((i, torch.tensor(pixels[:,1:9,1:9], dtype=torch.float32)))
         
-        targets = torch.tensor(rows[self.targets].values)
-        row_values = torch.tensor(rows.drop(columns=self.remove_columns).values)
-        mask = row_values.isnan()
-        row_values = row_values.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
-        return row_values, mask, modis_data, targets
+        predictor_df = rows.drop(columns=self.remove_columns + self.time_columns)
+        time_df = rows[self.time_columns]
+        target_df = rows[self.target_columns]
+        if self.time_series:
+            predictor_df = self.add_masked_targets(predictor_df, target_df.copy())
+        
+        predictor_values = torch.tensor(predictor_df.values)
+        predictor_labels = list(predictor_df.columns) # may be different from self.tabular_columns
+        predictor_mask = predictor_values.isnan()
+        predictor_values = predictor_values.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
+
+        time_values = torch.tensor(time_df.values)
+        time_labels = list(time_df.columns)
+
+        target_values = torch.tensor(target_df.values[-1:])
+        target_labels = list(target_df.columns)
+
+        return predictor_values, predictor_labels, predictor_mask, time_values, time_labels, modis_data, target_values, target_labels
 
 
 def custom_collate_fn(batch):
-    row_values, mask, modis_data, targets = zip(*batch)
+    predictor_values, predictor_labels, predictor_mask, time_values, time_labels, modis_data, target_values, target_labels = zip(*batch)
 
     # Normal attributes
-    row_values = torch.stack(row_values, dim=0)
-    mask = torch.stack(mask, dim=0)
-    targets = torch.stack(targets, dim=0)
+    predictor_values = torch.stack(predictor_values, dim=0)
+    predictor_mask = torch.stack(predictor_mask, dim=0)
+    time_values = torch.stack(time_values, dim=0)
+    target_values = torch.stack(target_values, dim=0)
 
     # List of modis data. Tuples of (batch, timestep, data)
     modis_list = []
     for b, batch in enumerate(modis_data):
         for t, data in batch:
             modis_list.append((b, t, data))
+    
+    # Ensure all samples have the same label number and order
+    for a in predictor_labels[1:]:
+        np.testing.assert_array_equal(predictor_labels[0], a, f'Difference found in input arrays {predictor_labels[0]} and {a}')
 
-    return row_values, mask, modis_list, targets
+    return predictor_values, predictor_labels[0], predictor_mask, time_values, time_labels[0], modis_list, target_values, target_labels[0]
 
-def FluxDataLoader(data_dir, sites, context_length = 48, targets=['GPP_NT_VUT_REF'], **kwargs):
-    ds = FluxDataset(data_dir, sites, context_length=context_length, targets=targets)
+def FluxDataLoader(data_dir, sites, context_length=48, target_columns=['NEE_VUT_REF'], time_series=False, **kwargs):
+    ds = FluxDataset(data_dir, sites, context_length=context_length, target_columns=target_columns, time_series=time_series)
     return DataLoader(ds, collate_fn=custom_collate_fn, **kwargs)
 
 
@@ -142,12 +176,16 @@ class Perceiver(nn.Module):
         super().__init__()
         self.config = config
         self.input_embeddings = nn.Embedding(len(self.config.tabular_inputs), self.config.input_embedding_dim)
+        self.input_embeddings_map = {label: i for i, label in enumerate(self.config.tabular_inputs)}
+
         self.fourier = FourierFeatureMapping(self.config.num_frequencies)
         self.input_hidden_dim = self.config.input_embedding_dim + self.config.num_frequencies * 2
         self.obs_dropout = nn.Dropout(p=self.config.obs_dropout)
 
         latent_hidden_dim = self.config.latent_hidden_dim
-        self.latent_embeddings = nn.Embedding(self.config.context_length, latent_hidden_dim)
+        context_length = self.config.context_length
+
+        self.latent_embeddings = nn.Embedding(context_length, latent_hidden_dim)
 
         num_pixels = self.config.spectral_data_resolution[0] * self.config.spectral_data_resolution[1]
         self.channels = self.config.spectral_data_channels # for brevity
@@ -162,8 +200,8 @@ class Perceiver(nn.Module):
         layers = []
         if self.config.weight_sharing:
             cross_attention_block = [
-                vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim),
-                vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
+                vc.AttentionLayer(latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim),
+                vc.AttentionLayer(latent_hidden_dim, config.num_heads, config.mlp_ratio)
             ]
             for i in range(len(self.layer_types)//2):
                 block_type = self.layer_types[i*2:(i+1)*2]
@@ -171,15 +209,15 @@ class Perceiver(nn.Module):
                     layers.extend(cross_attention_block)
                 else:
                     layers.extend([
-                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio),
-                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio)
+                        vc.AttentionLayer(latent_hidden_dim, config.num_heads, config.mlp_ratio),
+                        vc.AttentionLayer(latent_hidden_dim, config.num_heads, config.mlp_ratio)
                     ])
             
         else:
             for l in self.layer_types:
                 if l == 'c':
                     layers.append(
-                        vc.AttentionLayer(config.latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
+                        vc.AttentionLayer(latent_hidden_dim, config.num_heads, config.mlp_ratio, kv_hidden_size=self.input_hidden_dim)
                     )
                 elif l == 's':
                     layers.append(
@@ -187,11 +225,11 @@ class Perceiver(nn.Module):
                     )
 
         self.layers = nn.ModuleList(layers)
-        self.output_proj = nn.Linear(config.latent_hidden_dim, 1)
-        self.causal_mask = nn.Parameter(torch.zeros((1, self.config.context_length, self.config.context_length), dtype=torch.bool), requires_grad=False)
+        self.output_proj = nn.Linear(latent_hidden_dim, 1)
+        self.causal_mask = nn.Parameter(torch.zeros((1, context_length, context_length), dtype=torch.bool), requires_grad=False)
         if self.config.causal:
-            for y in range(self.config.context_length):
-                for x in range(self.config.context_length):
+            for y in range(context_length):
+                for x in range(context_length):
                     self.causal_mask[:,y,x] = y < x
         
         self.apply(self.initialize_weights)
@@ -229,7 +267,11 @@ class Perceiver(nn.Module):
         
         return img_data, img_map
 
-    def forward(self, observations, masks, spectral_data, fluxes):
+    #def forward(self, observations, masks, spectral_data, fluxes):
+    def forward(
+            self, predictor_values, predictor_labels, predictor_mask,
+            time_values, time_labels, spectral_data,
+            fluxes, flux_labels):
         '''
         B - batch size
         L - sequence length
@@ -242,20 +284,27 @@ class Perceiver(nn.Module):
         H - latent hidden dim
         '''
         device = self.input_embeddings.weight.device
-        masks = masks.to(device)
-        if self.training:
-            dropout_mask = ~self.obs_dropout(torch.ones(masks.shape, device=device)).to(torch.bool)
-            masks = masks | dropout_mask
-        masks[:,:,-2:] = False # never mask ToD or DoY. This also ensures no NaNs in attention block.
-        observations = observations.to(device)
-        fluxes = fluxes.to(device)
 
+        # Marshall data
+        predictor_mask = predictor_mask.to(device)
+        time_mask = torch.zeros(time_values.shape, device=device).to(torch.bool)
+        if self.training:
+            dropout_mask = ~self.obs_dropout(torch.ones(predictor_mask.shape, device=device)).to(torch.bool)
+            predictor_mask = predictor_mask | dropout_mask
+        
+        masks = torch.cat([time_mask, predictor_mask], dim=-1) # so time values are never masked out
+        predictor_values = predictor_values.to(device)
+        time_values = time_values.to(device)
+        observations = torch.cat([time_values, predictor_values], dim=-1)
+        labels = time_labels + predictor_labels
+        fluxes = fluxes.to(device)
         if len(spectral_data) == 0:
-            return self.forward_no_images(observations, masks, fluxes)
+            return self.forward_no_images(observations, labels, masks, fluxes, flux_labels)
 
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
-        embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
+        embedding_obs = torch.stack([self.input_embeddings.weight[self.input_embeddings_map[l]] for l in labels], dim=0).to(device)
+        embedding_obs = embedding_obs.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
         combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
         combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
         masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
@@ -289,16 +338,15 @@ class Perceiver(nn.Module):
             elif layer_type == 's':
                 hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
         
-        op = self.output_proj(hidden).squeeze()
-        all_loss = self.loss(fluxes.squeeze(), op)
+        op = self.output_proj(hidden[:,-1,:]).squeeze() # B
+        loss = self.loss(fluxes.squeeze(), op)
         
         return {
-            'loss': all_loss[-1],
-            'aux_loss': all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum(),
+            'loss': loss,
             'logits': op,
         }
     
-    def forward_no_images(self, observations, masks, fluxes):
+    def forward_no_images(self, observations, labels, masks, fluxes, flux_labels):
         '''
         B - batch size
         L - sequence length
@@ -310,13 +358,14 @@ class Perceiver(nn.Module):
         IH - total input dim (I + 2*F)
         H - latent hidden dim
         '''
+        device = self.input_embeddings.weight.device
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
-        embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
+        embedding_obs = torch.stack([self.input_embeddings.weight[self.input_embeddings_map[l]] for l in labels], dim=0).to(device)
+        embedding_obs = embedding_obs.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
         combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
         combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
         masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
-
 
         combined_obs = self.layer_norm_ec(combined_obs)
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
@@ -330,15 +379,13 @@ class Perceiver(nn.Module):
             elif layer_type == 's':
                 hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
         
-        op = self.output_proj(hidden).squeeze()
-        all_loss = self.loss(fluxes.squeeze(), op)
-        
+        op = self.output_proj(hidden[:,-1,:]).squeeze() # B
+        loss = self.loss(fluxes.squeeze(), op)
         return {
-            'loss': all_loss[-1],
-            'aux_loss': all_loss[-1] + self.config.auxilliary_loss * all_loss[:-1].sum(),
+            'loss': loss,
             'logits': op,
         }
     
     def loss(self, pred, target):
         loss = (pred - target) ** 2
-        return loss.mean(dim=0)
+        return loss.mean()

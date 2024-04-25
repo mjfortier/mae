@@ -214,7 +214,45 @@ class ViTSinCosPositionalSquareEmbeddings(nn.Module):
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
         pos = torch.cat((pos_x.sin(), pos_x.cos(), pos_y.sin(), pos_y.cos()), dim=3).permute(0, 3, 1, 2)
-        return x + pos
+    
+    
+class ViTSinCos1DPositionalEmbeddings(nn.Module):
+    '''
+    This module takes input of shape (Batch, hidden_size, H, W)
+    Advantage: Image size agnostic, and keeps patches in rectangular shape
+    Disadvantage: More computation on-the-fly as the embeddings are recalculated
+    '''
+    def __init__(self, hidden_size, temperature: int = 10000):
+        super().__init__()
+        self.hidden_size = hidden_size
+        inv_freq = 1.0 / (temperature ** (torch.arange(0, hidden_size, 2).float() / hidden_size))
+        self.register_buffer("inv_freq", inv_freq)
+        self.register_buffer("cached_penc", None, persistent=False)
+
+    def get_emb(self, sin_inp):
+        """
+        Gets a base embedding for one dimension with sin and cos intertwined
+        """
+        emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
+        return torch.flatten(emb, -2, -1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if len(x.shape) != 3:
+            raise RuntimeError("The input tensor has to be 3d!")
+
+        if self.cached_penc is not None and self.cached_penc.shape == x.shape:
+            return self.cached_penc
+
+        self.cached_penc = None
+        B, L, H = x.shape
+        pos_x = torch.arange(L, device=x.device, dtype=self.inv_freq.dtype)
+        sin_inp_x = torch.einsum("i,j->ij", pos_x, self.inv_freq)
+        emb_x = self.get_emb(sin_inp_x)
+        emb = torch.zeros((L, self.hidden_size), device=x.device, dtype=x.dtype)
+        emb[:, : self.hidden_size] = emb_x
+
+        self.cached_penc = emb[None, :, :H].repeat(B, 1, 1)
+        return self.cached_penc
 
 
 class ViTMAERandomMasking(nn.Module):
