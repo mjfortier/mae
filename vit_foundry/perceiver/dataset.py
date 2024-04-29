@@ -12,7 +12,6 @@ class FluxDataset(Dataset):
     def __init__(
             self, data_dir, sites, time_series=False, context_length=48,
             target_columns=['NEE_VUT_REF'],
-            time_columns=['DOY', 'TOD'],
             remove_columns=['timestamp', 'NEE_VUT_REF', 'GPP_NT_VUT_REF', 'RECO_NT_VUT_REF'], # to be removed by default from predictors
             ):
         self.data_dir = data_dir
@@ -22,7 +21,6 @@ class FluxDataset(Dataset):
         self.context_length = context_length
 
         self.target_columns = target_columns
-        self.time_columns = time_columns
         self.remove_columns = remove_columns
         
         for root, _, files in os.walk(self.data_dir):
@@ -51,24 +49,23 @@ class FluxDataset(Dataset):
             _, df, _ = d
             for r in range(self.context_length, len(df)+1):
                 self.lookup_table.append((i,r))
-        
-        col_df = self.data[0][1].drop(columns=self.remove_columns)
-        
-        self.tabular_columns = list(col_df.columns) + self.target_columns # total list for model config purposes
-        self.modis_bands = max([v.shape[0] for v in list(self.data[0][2].values())])
 
     def num_channels(self):
         # returns number of frequency bands in the imagery
         _, _, modis = self.data[0]
         return modis[list(modis.keys())[0]].shape[0]
     
-    def add_masked_targets(self, predictor_df, target_df):
+    def columns(self):
+        _, labels, _, _, _ = self.__getitem__(0)
+        return labels
+    
+    def mask_targets(self, prev_targets):
         # Add targets to predictors, but only a random number of them to simulate cold starts
-        n = np.random.randint(0, len(predictor_df))
-        target_df[-1:] = np.nan
-        target_df[:n] = np.nan
-        predictor_df = pd.concat([predictor_df, target_df], axis=1)
-        return predictor_df
+        prev_mask = torch.zeros(prev_targets.shape).to(torch.bool)
+        n = np.random.randint(0, len(prev_targets))
+        prev_mask[-1:] = True
+        prev_mask[:n] = True
+        return prev_mask | prev_targets.isnan()
 
     def __len__(self):
         return len(self.lookup_table)
@@ -88,46 +85,46 @@ class FluxDataset(Dataset):
             if pixels is not None:
                 modis_data.append((i, torch.tensor(pixels[:,1:9,1:9], dtype=torch.float32)))
         
-        predictor_df = rows.drop(columns=self.remove_columns + self.time_columns)
-        time_df = rows[self.time_columns]
+        predictor_df = rows.drop(columns=self.remove_columns)
+        labels = list(predictor_df.columns)
         target_df = rows[self.target_columns]
-        if self.time_series:
-            predictor_df = self.add_masked_targets(predictor_df, target_df.copy())
         
-        predictor_values = torch.tensor(predictor_df.values)
-        predictor_labels = list(predictor_df.columns) # may be different from self.tabular_columns
-        predictor_mask = predictor_values.isnan()
-        predictor_values = predictor_values.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
+        predictors = torch.tensor(predictor_df.values)
+        mask = predictors.isnan()
+        predictors = predictors.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
 
-        time_values = torch.tensor(time_df.values)
-        time_labels = list(time_df.columns)
+        targets = torch.tensor(target_df.values[-1:])
 
-        target_values = torch.tensor(target_df.values[-1:])
-        target_labels = list(target_df.columns)
+        if self.time_series:
+            prev_targets = torch.tensor(target_df.values)
+            prev_mask = self.mask_targets(prev_targets)
 
-        return predictor_values, predictor_labels, predictor_mask, time_values, time_labels, modis_data, target_values, target_labels
+            predictors = torch.cat([predictors, prev_targets], dim=1)
+            mask = torch.cat([mask, prev_mask], dim=1)
+            labels.extend(self.target_columns)
+
+        return predictors, labels, mask, modis_data, targets
 
 
 def custom_collate_fn(batch):
-    predictor_values, predictor_labels, predictor_mask, time_values, time_labels, modis_data, target_values, target_labels = zip(*batch)
-
+    predictors, labels, mask, modis_data, targets = zip(*batch)
     # Normal attributes
-    predictor_values = torch.stack(predictor_values, dim=0)
-    predictor_mask = torch.stack(predictor_mask, dim=0)
-    time_values = torch.stack(time_values, dim=0)
-    target_values = torch.stack(target_values, dim=0)
+    predictors = torch.stack(predictors, dim=0)
+    mask = torch.stack(mask, dim=0)
+    targets = torch.stack(targets, dim=0)
+
+    for l in labels[1:]:
+        np.testing.assert_array_equal(labels[0], l, f'Difference found in input arrays {labels[0]} and {l}')
+    labels = labels[0]
 
     # List of modis data. Tuples of (batch, timestep, data)
     modis_list = []
     for b, batch in enumerate(modis_data):
         for t, data in batch:
             modis_list.append((b, t, data))
-    
-    # Ensure all samples have the same label number and order
-    for a in predictor_labels[1:]:
-        np.testing.assert_array_equal(predictor_labels[0], a, f'Difference found in input arrays {predictor_labels[0]} and {a}')
+    modis_data = modis_list
 
-    return predictor_values, predictor_labels[0], predictor_mask, time_values, time_labels[0], modis_list, target_values, target_labels[0]
+    return predictors, labels, mask, modis_data, targets
 
 
 class FluxTimeSeriesValidationDataLoader():
@@ -147,7 +144,7 @@ class FluxTimeSeriesValidationDataLoader():
         self.target_columns = target_columns.copy()
         self.time_columns = time_columns.copy()
         self.remove_columns = remove_columns.copy()
-        [self.remove_columns.remove(c) for c in self.target_columns]
+        #[self.remove_columns.remove(c) for c in self.target_columns]
 
         self.current_files = []
 
@@ -165,10 +162,8 @@ class FluxTimeSeriesValidationDataLoader():
                 float_cols = [c for c in df.columns if c != 'timestamp']
                 df[float_cols] = df[float_cols].astype(np.float32)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
-                gt_df = df[['timestamp'] + target_columns].copy()
+                cache_df = df[['timestamp'] + target_columns].copy()
                 df[float_cols] = df[float_cols].astype(np.float32)
-                df[self.target_columns] = np.nan
-                df[self.target_columns] = df[self.target_columns].astype(np.float32)
 
                 with open(os.path.join(root, 'modis.pkl'), 'rb') as f:
                     modis_data = pkl.load(f)
@@ -178,7 +173,7 @@ class FluxTimeSeriesValidationDataLoader():
                 self.data.append({
                     'meta': meta,
                     'df': df,
-                    'gt_df': gt_df,
+                    'cache_df': cache_df,
                     'modis_data': modis_data,
                     'final_row': len(df),
                     'current_row': self.context_length - 1,
@@ -188,8 +183,8 @@ class FluxTimeSeriesValidationDataLoader():
     
     def reset_files(self):
         for file in self.data:
-            file['df'][self.target_columns] = np.nan
-            file['df'][self.target_columns] = file['df'][self.target_columns].astype(np.float32)
+            file['cache_df'][self.target_columns] = np.nan
+            file['cache_df'][self.target_columns] = file['cache_df'][self.target_columns].astype(np.float32)
             file['current_row'] = self.context_length
             file['finished'] = False
         self.set_current_files()
@@ -228,7 +223,7 @@ class FluxTimeSeriesValidationDataLoader():
         if type(output_values) != list:
             output_values = [output_values]
         for file, target_values in zip(self.current_files, output_values):
-            file['df'].loc[file['current_row']-1, self.target_columns] = target_values
+            file['cache_df'].loc[file['current_row']-1, self.target_columns] = target_values
             file['current_row'] += 1
             if file['current_row'] > len(file['df']):
                 file['finished'] = True
@@ -244,6 +239,8 @@ class FluxTimeSeriesValidationDataLoader():
             row_min = row_max - self.context_length
             rows = file['df'].iloc[row_min:row_max]
             rows = rows.reset_index(drop=True)
+            cache_rows = file['cache_df'].iloc[row_min:row_max]
+            cache_rows = cache_rows.reset_index(drop=True)
 
             modis_data = []
             timestamps = list(rows['timestamp'])
@@ -252,23 +249,28 @@ class FluxTimeSeriesValidationDataLoader():
                 if pixels is not None:
                     modis_data.append((i, torch.tensor(pixels[:,1:9,1:9], dtype=torch.float32)))
         
-            predictor_df = rows.drop(columns=self.remove_columns + self.time_columns)
-            time_df = rows[self.time_columns]
+
+
+            predictor_df = rows.drop(columns=self.remove_columns)
+            labels = list(predictor_df.columns)
             target_df = rows[self.target_columns]
-        
-            predictor_values = torch.tensor(predictor_df.values)
-            predictor_labels = list(predictor_df.columns) # may be different from self.tabular_columns
-            predictor_mask = predictor_values.isnan()
-            predictor_values = predictor_values.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
+            
+            predictors = torch.tensor(predictor_df.values)
+            mask = predictors.isnan()
+            predictors = predictors.nan_to_num(-1.0) # just needs a numeric value, doesn't matter what
 
-            time_values = torch.tensor(time_df.values)
-            time_labels = list(time_df.columns)
+            targets = torch.tensor(target_df.values[-1:])
 
-            target_values = torch.tensor(target_df.values[-1:])
-            target_labels = list(target_df.columns)
-            batch.append([
-                predictor_values, predictor_labels, predictor_mask, time_values, time_labels, modis_data, target_values, target_labels
-            ])
+            cache_df = cache_rows.drop(columns=['timestamp'])
+            cache_values = torch.tensor(cache_df.values)
+            cache_mask = cache_values.isnan()
+            cache_values = cache_values.nan_to_num(-1.0)
+
+            predictors = torch.cat([predictors, cache_values], dim=1)
+            mask = torch.cat([mask, cache_mask], dim=1)
+            labels.extend(list(cache_df.columns))
+
+            batch.append([predictors, labels, mask, modis_data, targets])
         return custom_collate_fn(batch) if len(batch) > 0 else []
 
     def batches(self):
@@ -280,6 +282,14 @@ class FluxTimeSeriesValidationDataLoader():
 
     def __iter__(self):
         return self.batches()
+    
+    def inference_values(self):
+        files = []
+        for file in self.data:
+            cache_df = file['cache_df'][['NEE_VUT_REF']]
+            df = pd.concat([file['df'][['timestamp', 'NEE_VUT_REF']], cache_df.rename(columns={'NEE_VUT_REF': 'inferred'})], axis=1)
+            files.append([file['meta'], df])
+        return files
         
 
 def FluxDataLoader(data_dir, sites, context_length=48, target_columns=['NEE_VUT_REF'], time_series=False, **kwargs):

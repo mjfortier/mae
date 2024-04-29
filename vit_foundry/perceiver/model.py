@@ -21,7 +21,7 @@ class PerceiverConfig():
     num_heads: int = 8
     obs_dropout: float = 0.0
     layers: str = 'cscscsss' # c = cross-attention (with input), s = self-attention
-    targets: Tuple = ('GPP_NT_VUT_REF')
+    targets: Tuple = ('NEE_VUT_REF')
     causal: bool = True
 
 
@@ -44,7 +44,6 @@ class Perceiver(nn.Module):
         super().__init__()
         self.config = config
         self.input_embeddings = nn.Embedding(len(self.config.tabular_inputs), self.config.input_embedding_dim)
-        self.input_embeddings_map = {label: i for i, label in enumerate(self.config.tabular_inputs)}
 
         self.fourier = FourierFeatureMapping(self.config.num_frequencies)
         self.input_hidden_dim = self.config.input_embedding_dim + self.config.num_frequencies * 2
@@ -136,10 +135,7 @@ class Perceiver(nn.Module):
         return img_data, img_map
 
     #def forward(self, observations, masks, spectral_data, fluxes):
-    def forward(
-            self, predictor_values, predictor_labels, predictor_mask,
-            time_values, time_labels, spectral_data,
-            fluxes, flux_labels):
+    def forward(self, predictors, labels, mask, spectral_data, fluxes):
         '''
         B - batch size
         L - sequence length
@@ -154,36 +150,35 @@ class Perceiver(nn.Module):
         device = self.input_embeddings.weight.device
 
         # Marshall data
-        predictor_mask = predictor_mask.to(device)
-        time_mask = torch.zeros(time_values.shape, device=device).to(torch.bool)
+        mask = mask.to(device)
         if self.training:
-            dropout_mask = ~self.obs_dropout(torch.ones(predictor_mask.shape, device=device)).to(torch.bool)
-            predictor_mask = predictor_mask | dropout_mask
+            dropout_mask = ~self.obs_dropout(torch.ones(mask.shape, device=device)).to(torch.bool)
+            mask = mask | dropout_mask
+        # Don't drop DoY or ToD
+        doy_index = labels.index('DOY')
+        tod_index = labels.index('TOD')
+        mask[:,:,doy_index] = False
+        mask[:,:,tod_index] = False
         
-        masks = torch.cat([time_mask, predictor_mask], dim=-1) # so time values are never masked out
-        predictor_values = predictor_values.to(device)
-        time_values = time_values.to(device)
-        observations = torch.cat([time_values, predictor_values], dim=-1)
-        labels = time_labels + predictor_labels
+        observations = predictors.to(device)
         fluxes = fluxes.to(device)
         if len(spectral_data) == 0:
-            return self.forward_no_images(observations, labels, masks, fluxes, flux_labels)
+            return self.forward_no_images(observations, mask, fluxes)
 
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
-        embedding_obs = torch.stack([self.input_embeddings.weight[self.input_embeddings_map[l]] for l in labels], dim=0).to(device)
-        embedding_obs = embedding_obs.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
+        embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
         combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
         combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
-        masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
+        mask = rearrange(mask, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
 
         # images
         img_data, img_map = self.process_spectral_inputs(spectral_data, B, L)
 
         # divide obs
-        masks_with_image = torch.cat([masks[img_map], torch.zeros((len(spectral_data), 1, self.channels), dtype=bool, device=device)], dim=-1) # (M, 1, P+C)
+        mask_with_image = torch.cat([mask[img_map], torch.zeros((len(spectral_data), 1, self.channels), dtype=bool, device=device)], dim=-1) # (M, 1, P+C)
         obs_with_image = torch.cat([combined_obs[img_map], img_data], dim=1)
-        masks_without_image = masks[~img_map]
+        mask_without_image = mask[~img_map]
         obs_without_image = combined_obs[~img_map]
 
         obs_with_image = self.layer_norm_eo(obs_with_image)
@@ -197,8 +192,8 @@ class Perceiver(nn.Module):
                 hidden_with_image = hidden[img_map]
                 hidden_without_image = hidden[~img_map]
 
-                hidden_with_image, _ = self.layers[i](hidden_with_image, obs_with_image, mask=masks_with_image)
-                hidden_without_image, _ = self.layers[i](hidden_without_image, obs_without_image, mask=masks_without_image)
+                hidden_with_image, _ = self.layers[i](hidden_with_image, obs_with_image, mask=mask_with_image)
+                hidden_without_image, _ = self.layers[i](hidden_without_image, obs_without_image, mask=mask_without_image)
 
                 hidden[img_map] = hidden_with_image
                 hidden[~img_map] = hidden_without_image
@@ -214,7 +209,7 @@ class Perceiver(nn.Module):
             'logits': op,
         }
     
-    def forward_no_images(self, observations, labels, masks, fluxes, flux_labels):
+    def forward_no_images(self, observations, mask, fluxes):
         '''
         B - batch size
         L - sequence length
@@ -229,11 +224,10 @@ class Perceiver(nn.Module):
         device = self.input_embeddings.weight.device
         B, L, P = observations.shape
         fourier_obs = self.fourier(observations) # (B, L, P, 2*F)
-        embedding_obs = torch.stack([self.input_embeddings.weight[self.input_embeddings_map[l]] for l in labels], dim=0).to(device)
-        embedding_obs = embedding_obs.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
+        embedding_obs = self.input_embeddings.weight.unsqueeze(0).unsqueeze(0).repeat(B, L, 1, 1) # (B, L, P, I)
         combined_obs = torch.cat([fourier_obs, embedding_obs], dim=-1) # (B, L, P, IH)
         combined_obs = rearrange(combined_obs, 'B L P IH -> (B L) P IH') # (B*L, P, IH)
-        masks = rearrange(masks, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
+        mask = rearrange(mask, 'B L P -> (B L) P').unsqueeze(1) # (B*L, 1, P)
 
         combined_obs = self.layer_norm_ec(combined_obs)
         hidden = self.latent_embeddings.weight.unsqueeze(0).repeat(B,1,1) # (B, L, H)
@@ -242,7 +236,7 @@ class Perceiver(nn.Module):
             if layer_type == 'c':
                 hidden = rearrange(hidden, 'B L H -> (B L) H').unsqueeze(1) # (B*L, 1, H)
 
-                hidden, _ = self.layers[i](hidden, combined_obs, mask=masks)
+                hidden, _ = self.layers[i](hidden, combined_obs, mask=mask)
                 hidden = rearrange(hidden.squeeze(), '(B L) H -> B L H', B=B, L=L)
             elif layer_type == 's':
                 hidden, _ = self.layers[i](hidden, hidden, mask=self.causal_mask)
