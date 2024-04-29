@@ -139,12 +139,13 @@ class FluxTimeSeriesValidationDataLoader():
         self.sites = sites
         self.context_length = context_length
         self.batch_size = batch_size
-        self.data = []
+        self.data = {}
 
         self.target_columns = target_columns.copy()
         self.time_columns = time_columns.copy()
         self.remove_columns = remove_columns.copy()
         #[self.remove_columns.remove(c) for c in self.target_columns]
+
 
         self.current_files = []
 
@@ -162,27 +163,28 @@ class FluxTimeSeriesValidationDataLoader():
                 float_cols = [c for c in df.columns if c != 'timestamp']
                 df[float_cols] = df[float_cols].astype(np.float32)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
-                cache_df = df[['timestamp'] + target_columns].copy()
                 df[float_cols] = df[float_cols].astype(np.float32)
 
                 with open(os.path.join(root, 'modis.pkl'), 'rb') as f:
                     modis_data = pkl.load(f)
                 with open(os.path.join(root, 'meta.json'), 'r') as f:
                     meta = json.load(f)
-
-                self.data.append({
-                    'meta': meta,
-                    'df': df,
-                    'cache_df': cache_df,
-                    'modis_data': modis_data,
-                    'final_row': len(df),
-                    'current_row': self.context_length - 1,
-                    'finished': False
-                })
+                
+                for year, year_df in df.groupby(df['timestamp'].dt.year):
+                    year_modis = {k:v for k,v in modis_data.items() if k.year == year}
+                    self.data[f'{meta["SITE_ID"]}_{year}'] = {
+                        'meta': meta,
+                        'df': year_df.reset_index(drop=True),
+                        'cache_df': year_df.reset_index(drop=True)[['timestamp'] + target_columns].copy(),
+                        'modis_data': year_modis,
+                        'final_row': len(year_df),
+                        'current_row': self.context_length - 1,
+                        'finished': False
+                    }
         self.set_dataset_len()
     
     def reset_files(self):
-        for file in self.data:
+        for _, file in self.data.items():
             file['cache_df'][self.target_columns] = np.nan
             file['cache_df'][self.target_columns] = file['cache_df'][self.target_columns].astype(np.float32)
             file['current_row'] = self.context_length
@@ -195,9 +197,9 @@ class FluxTimeSeriesValidationDataLoader():
         while len(self.current_files) > 0:
             dirty_current_file_list = False
             for file in self.current_files:
-                file['current_row'] += 1
-                if file['current_row'] > len(file['df']):
-                    file['finished'] = True
+                self.data[file]['current_row'] += 1
+                if self.data[file]['current_row'] > len(self.data[file]['df']):
+                    self.data[file]['finished'] = True
                     dirty_current_file_list = True
             if dirty_current_file_list:
                 self.set_current_files()
@@ -209,24 +211,25 @@ class FluxTimeSeriesValidationDataLoader():
         return self.len
     
     def set_current_files(self):
-        # Set the current_files array with up to {context_length} unfinished files
-        for file in self.data:
+        # Set the current_files array with up to {batch_size} unfinished files
+        for name, file in self.data.items():
             if file['finished']:
-                if file in self.current_files:
-                    self.current_files.remove(file)
+                if name in self.current_files:
+                    self.current_files.remove(name)
                 continue
-            if file not in self.current_files and len(self.current_files) < self.batch_size:
-                self.current_files.append(file)
+            if name not in self.current_files and len(self.current_files) < self.batch_size:
+                self.current_files.append(name)
     
     def update_inferred_values(self, output_values):
         dirty_current_file_list = False
         if type(output_values) != list:
             output_values = [output_values]
         for file, target_values in zip(self.current_files, output_values):
-            file['cache_df'].loc[file['current_row']-1, self.target_columns] = target_values
-            file['current_row'] += 1
-            if file['current_row'] > len(file['df']):
-                file['finished'] = True
+            self.data[file]['cache_df'].loc[self.data[file]['current_row']-1, self.target_columns] = target_values
+
+            self.data[file]['current_row'] += 1
+            if self.data[file]['current_row'] > len(self.data[file]['df']):
+                self.data[file]['finished'] = True
                 dirty_current_file_list = True
         if dirty_current_file_list:
             self.set_current_files()
@@ -235,17 +238,17 @@ class FluxTimeSeriesValidationDataLoader():
         ### This is what needs to be finished
         batch = []
         for file in self.current_files:
-            row_max = file['current_row']
+            row_max = self.data[file]['current_row']
             row_min = row_max - self.context_length
-            rows = file['df'].iloc[row_min:row_max]
+            rows = self.data[file]['df'].iloc[row_min:row_max]
             rows = rows.reset_index(drop=True)
-            cache_rows = file['cache_df'].iloc[row_min:row_max]
+            cache_rows = self.data[file]['cache_df'].iloc[row_min:row_max]
             cache_rows = cache_rows.reset_index(drop=True)
 
             modis_data = []
             timestamps = list(rows['timestamp'])
             for i, ts in enumerate(timestamps):
-                pixels = file['modis_data'].get(ts, None)
+                pixels = self.data[file]['modis_data'].get(ts, None)
                 if pixels is not None:
                     modis_data.append((i, torch.tensor(pixels[:,1:9,1:9], dtype=torch.float32)))
         
@@ -285,10 +288,10 @@ class FluxTimeSeriesValidationDataLoader():
     
     def inference_values(self):
         files = []
-        for file in self.data:
+        for name, file in self.data.items():
             cache_df = file['cache_df'][['NEE_VUT_REF']]
             df = pd.concat([file['df'][['timestamp', 'NEE_VUT_REF']], cache_df.rename(columns={'NEE_VUT_REF': 'inferred'})], axis=1)
-            files.append([file['meta'], df])
+            files.append([name, df])
         return files
         
 
